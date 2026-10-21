@@ -667,7 +667,7 @@ class TestTheBoundaryScanRunsBeforeTheReset:
 
 
 class TestTheCardsGiveRecoveryAdviceThatWorks:
-    """Source-level guard over the two turn-end card texts (issue #22398).
+    """Source-level guard over the two turn-end card texts.
 
     A leaked call stays in the chat's own context, so on a re-send the model
     tends to write the same plain-text call again. A card that promises a
@@ -677,7 +677,8 @@ class TestTheCardsGiveRecoveryAdviceThatWorks:
     """
 
     RUNNER = (
-        pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/chat_turn/turn_ending.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src/kiro_crew/dashboard/chat_turn/turn_ending.py"
     )
     GATES = ("should_notice_leaked_tool_call", "should_notice_mixed_turn_leak")
 
