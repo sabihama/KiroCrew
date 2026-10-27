@@ -9,13 +9,8 @@
  *   same `memberMemoryState` the editor's memory row reads; the store id is a
  *   generated directory name nobody chose.
  */
-import { useQuery } from '@tanstack/react-query'
 import { i18nT } from '../i18n/t'
-import { ApiError } from '../api/apiError'
-import { parseErrorCode, reportForError, type ErrorReport } from '../utils/errorReport'
-import { crewWorkerKitApi, crewWorkerKitKey } from '../api/crewCapabilities'
-import { DEFAULT_TEMPLATE, kitTemplateName, templateDisplayName } from '../components/crew/builtFromName'
-import { workerKitErrorText } from '../components/crew/workerKitErrors'
+import { DEFAULT_TEMPLATE, mateAbilitiesLabel, templateDisplayName } from '../components/crew/builtFromName'
 import { memberMemoryState } from './KiroCrewAgentsPageFields'
 
 export type MemoryStores = Record<string, { memory_version?: number; owner_member?: string }>
@@ -30,34 +25,14 @@ export function memoryStoreLabel(member: string, store: string, stores: MemorySt
 }
 
 /**
- * The template name a roster cell shows for "Built from".
+ * The label a roster cell shows for "Built from".
  *
- * A binding whose `kiro_agent` is the crewmate's own key reads its worker kit;
- * the kit endpoint answers `not_a_mate_file` when that name is in fact a shared
- * template, which is then shown by its own name. Empty while the kit loads.
- * Any other failure to read the kit is returned as `error`, with no label, so
- * the cell shows it rather than a provenance it does not know, and `report`
- * carries the request behind it for the agent hand-off.
+ * A binding whose `kiro_agent` is the crewmate's own key owns its file: its
+ * abilities are the sum of its worker base plus whatever was added to it, not a
+ * single template, so it is labelled generically as a mate. Any other binding
+ * is named by the shared template it points at.
  */
-export function useRosterBuiltFrom(agent: { name: string; kiro_agent: string }): { label: string; error: string | null; report?: ErrorReport } {
-  // A crewmate keyed `kirocrew` is bound to the default template, not to a file.
+export function rosterBuiltFrom(agent: { name: string; kiro_agent: string }): { label: string } {
   const ownsFile = !!agent.kiro_agent && agent.kiro_agent === agent.name && agent.kiro_agent !== DEFAULT_TEMPLATE
-  const kit = useQuery({
-    queryKey: crewWorkerKitKey(agent.name),
-    queryFn: () => crewWorkerKitApi.get(agent.name),
-    enabled: ownsFile,
-    retry: false,
-  })
-  if (!ownsFile) return { label: templateDisplayName(agent.kiro_agent), error: null }
-  if (kit.isError) {
-    const err = kit.error
-    if (err instanceof ApiError && parseErrorCode(err.body) === 'not_a_mate_file') {
-      return { label: templateDisplayName(agent.kiro_agent), error: null }
-    }
-    // The sentence is localized, so the hand-off is given the journalled
-    // report itself rather than looking it up by message.
-    return { label: '', error: workerKitErrorText(err), report: reportForError(err) }
-  }
-  if (!kit.data) return { label: '', error: null }
-  return { label: kitTemplateName(kit.data) ?? templateDisplayName(DEFAULT_TEMPLATE), error: null }
+  return { label: ownsFile ? mateAbilitiesLabel() : templateDisplayName(agent.kiro_agent) }
 }

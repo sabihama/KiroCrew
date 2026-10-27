@@ -103,6 +103,7 @@ def _apply_operations(
     ``inherit``. Value rules mirror the fork path.
     """
     from kiro_crew.agent_capabilities import CapabilityError, _contains_mask, _retain_transport
+    from kiro_crew.mate_worker import _server_of
 
     # The stored transports, before any op runs: a masked leaf the editor sends
     # back is restored from here (revision-bound by ``_edit``'s lock), never
@@ -119,6 +120,12 @@ def _apply_operations(
             raise CapabilityError("mate_has_no_parent", 400)
         if action == "remove":
             rows[section].pop(key, None)
+            if section == "mcpServers":
+                # Selectors leave with their server; restrictions stay in the file.
+                for selector_section in ("tools", "allowedTools"):
+                    for ref in list(rows[selector_section]):
+                        if _server_of(ref) == key:
+                            rows[selector_section].pop(ref)
             continue
         if action != "set":
             raise CapabilityError("invalid_operation", 400)
@@ -319,18 +326,113 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     def _strs(value: Any) -> list[str]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
+    names = {uri: key for key, uri in reversed(list(catalog.items()))}
+
+    def _skill_key(uri: str) -> str:
+        return names[uri] if uri in names else uri
+
+    # A row is ``local`` (the removable "Added to mate" band) only when the
+    # crewmate's own file carries it BEYOND the worker SOURCE BASE
+    # (``kirocrew-mate-worker``, derived from the default template in source and
+    # materialized at boot). Everything the base already provides is ``inherited``
+    # (the read-only "Comes with" band) — a newly-created mate is a near-copy of
+    # that base, so its baseline tools/servers read as "comes with", and only what
+    # the owner layered on via Add-abilities reads as "added". File MEMBERSHIP is
+    # the wrong test here: it marks a new mate's whole baseline removable, which is
+    # what the owner sees as wrong. The diff is ``worker_additions`` — the SAME
+    # file-vs-base computation the worker merge and the kit preview use — so the
+    # split matches what an add actually writes. Any read failure degrades to
+    # all-inherited (nothing removable) — the summary is display only.
+    local: dict[str, set[str]] = {
+        k: set() for k in ("tools", "allowedTools", "mcpServers", "skills")
+    }
+    # The editor rows the file really stores (``agent_capabilities._rows``, the
+    # same rows the ``remove`` operation pops from). A displayed row is removable
+    # only when it names one of them: a ``@server`` selector the merge derives from
+    # a stored ``*``, or an entry of the spec's own ``skills`` list, has no stored
+    # row, so it carries no Remove (it goes with its server, or stays).
+    stored: dict[str, dict] = {}
+    try:
+        from kiro_crew.agent_capabilities import _materialize, _rows
+        from kiro_crew.agent_discovery_parts.spec_fields import expand_skill_uri
+        from kiro_crew.agent_sdk import agent_specs
+        from kiro_crew.config.loader import default_project_dir
+        from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
+        from kiro_crew.skill_runtime.catalog import _matches_any, _with_canonical_globs
+
+        _path, file_spec = _load_spec(member)
+        base = agent_specs.load_agent_spec(mate_agents_dir(), MATE_WORKER_AGENT)
+        binding = KiroCrewConfig.load().agents.get(member)
+        project = default_project_dir(binding.workspace) if binding else ""
+        skill_path = _path or mate_config_path(member)
+        skill_uris = dict.fromkeys([*catalog.values(), *_strs(spec.get("resources"))])
+
+        def _effective(candidate: dict) -> dict[str, set[str]]:
+            """File additions, expanded over the displayed rows with runtime matching rules."""
+            adds = worker_additions({**base, "prompt": ""}, {**candidate, "prompt": ""})
+            effective = {
+                "tools": set(_strs(adds.get("tools"))),
+                "allowedTools": set(_strs(adds.get("allowedTools"))),
+                "mcpServers": set(adds.get("mcpServers") or {}),
+                "skills": {_skill_key(uri) for uri in _strs(adds.get("resources"))}
+                | set(_strs(adds.get("skills"))),
+            }
+            for section in ("tools", "allowedTools"):
+                effective[section].update(
+                    ref
+                    for ref in _strs(spec.get(section))
+                    if mate_worker.covered_by(ref, effective[section])
+                )
+            globs = _with_canonical_globs(
+                [
+                    glob
+                    for uri in _strs(adds.get("resources"))
+                    if (glob := expand_skill_uri(uri, skill_path, project_dir=project))
+                ],
+                project,
+            )
+            effective["skills"].update(
+                _skill_key(uri)
+                for uri in skill_uris
+                if (path := expand_skill_uri(uri, skill_path, project_dir=project))
+                and _matches_any(path, globs)
+            )
+            return effective
+
+        stored = _rows(file_spec, catalog)
+        local = _effective(file_spec)
+    except Exception:  # noqa: BLE001 - a summary is display only; default to inherited
+        logger.debug("worker base/file unreadable; all rows read inherited", exc_info=True)
+
+    def _remove_ref(section: str, key: str) -> dict | None:
+        """Offer a stored removal only when applying it makes the displayed item disappear."""
+        for where in (("skills", "resources") if section == "skills" else (section,)):
+            if key not in stored.get(where, {}):
+                continue
+            candidate = copy.deepcopy(file_spec)
+            candidate_rows = _rows(candidate, catalog)
+            _apply_operations(
+                candidate_rows, [{"section": where, "id": key, "action": "remove"}], catalog
+            )
+            remaining = _effective(_materialize(candidate, candidate_rows, catalog))
+            if key not in remaining[section]:
+                return {"section": where, "id": key}
+        return None
+
     def _row(section: str, key: str, value: Any = True) -> dict:
+        is_local = key in local.get(section, ())
         return {
             "section": section,
             "id": key,
             # A skill carries no label: the pane names it from its id, a skill
             # URI through ``workerKitLabels.skillLabel``, as the kit preview does.
             "label": "" if section == "skills" else key,
-            "state": "inherited",
+            "state": "local" if is_local else "inherited",
             "present": True,
             "value": value,
             "managed": False,
             "shared_reference": section == "skills",
+            "remove": _remove_ref(section, key) if is_local else None,
         }
 
     rows = [_row("tools", t) for t in dict.fromkeys(_strs(spec.get("tools")))]
@@ -341,9 +443,8 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
             rows.append(
                 _row("mcpServers", name, {k: v for k, v in entry.items() if k != "autoApprove"})
             )
-    names = {uri: key for key, uri in reversed(list(catalog.items()))}
     skills = [
-        names[uri] if uri in names else uri
+        _skill_key(uri)
         for uri in _strs(spec.get("resources"))
         if uri in names or uri.startswith("skill://")
     ]
