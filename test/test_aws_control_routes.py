@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import subprocess
 import sys
 import threading
 from unittest import mock
@@ -801,6 +802,35 @@ class _FakeContent:
 
 
 class TestDriveUpload:
+    @pytest.fixture(autouse=True)
+    def _tls_policy(self, _floor_monkeypatch):
+        """Keep the post-upload TLS-policy check off the real AWS CLI."""
+        from kiro_crew.apps.builtins.aws_control.backend.routes_parts import drive_writes
+
+        _floor_monkeypatch.setattr(drive_writes, "_TLS_POLICY_CHECKED", set())
+        self.ensure_tls = mock.Mock()
+        _floor_monkeypatch.setattr(
+            routes_mod.storage_mod, "ensure_tls_only_policy", self.ensure_tls
+        )
+
+    def test_an_upload_confirms_the_tls_only_policy_once_per_drive(self):
+        self._run([b"one"])
+        self._run([b"two"])
+        self.ensure_tls.assert_called_once()
+        assert self.ensure_tls.call_args.kwargs == {"account": ACCOUNT}
+
+    @pytest.mark.parametrize(
+        "failure", [AWSError("AccessDenied"), subprocess.TimeoutExpired("aws", 30)]
+    )
+    def test_a_tls_policy_failure_does_not_fail_the_upload(self, failure):
+        self.ensure_tls.side_effect = failure
+        resp, put = self._run([b"hello"])
+        assert resp.status == 200
+        put.assert_called_once()
+        # Tried once per process: a denied profile is not asked again on every upload.
+        self._run([b"again"])
+        self.ensure_tls.assert_called_once()
+
     def _run(self, chunks, *, key="f.bin", app_enabled_recheck=True, consent_recheck=True):
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -1316,6 +1346,34 @@ class TestDriveMove:
             )
         assert resp.status == 409
         assert _payload(resp)["code"] == "share_active"
+        assert not head.called and not copy.called and not delete.called
+
+    def test_move_onto_a_key_with_an_unexpired_share_is_refused(self):
+        # A share link outlives the object it was minted for. Moving a file onto
+        # that key would make the old link serve the moved file.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/move", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(  # type: ignore[method-assign]
+            return_value={"section": "drive", "fromKey": "a.txt", "toKey": "b.txt"}
+        )
+        live = [{"account": ACCOUNT, "section": "drive", "key": "b.txt"}]
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.shares_mod, "list_shares", return_value=live),
+            mock.patch.object(routes_mod.storage_mod, "object_exists") as head,
+            mock.patch.object(routes_mod.storage_mod, "copy_object") as copy,
+            mock.patch.object(routes_mod.storage_mod, "delete_key") as delete,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "destination_share_active"
         assert not head.called and not copy.called and not delete.called
 
     def test_move_destination_probe_failure_fails_closed(self):

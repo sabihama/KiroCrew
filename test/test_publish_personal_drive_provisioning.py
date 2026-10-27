@@ -97,6 +97,25 @@ def test_bucket_policy_serves_only_the_public_prefix():
     assert deny and deny[0]["NotResource"] == f"arn:aws:s3:::{BUCKET}/public/*"
 
 
+def test_bucket_policy_refuses_requests_not_sent_over_tls():
+    policy = json.loads(
+        pd.PersonalDriveProvider()._prefix_scoped_bucket_policy(
+            BUCKET, "arn:aws:cloudfront::1:distribution/E1"
+        )
+    )
+    tls = [s for s in policy["Statement"] if s.get("Sid") == "KiroCrewDenyInsecureTransport"]
+    assert tls == [
+        {
+            "Sid": "KiroCrewDenyInsecureTransport",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [f"arn:aws:s3:::{BUCKET}", f"arn:aws:s3:::{BUCKET}/*"],
+            "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+        }
+    ]
+
+
 def test_bucket_policy_never_grants_the_private_prefix():
     policy = json.loads(pd.PersonalDriveProvider()._prefix_scoped_bucket_policy("b", "arn:x"))
     for stmt in policy["Statement"]:

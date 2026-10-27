@@ -723,7 +723,8 @@ class PersonalDriveProvider(PublishProvider):
         that holds one site's content and nothing else. This bucket also holds private
         objects, so a whole-bucket grant would serve them. The Deny is belt-and-braces:
         the Allow already omits them, and an explicit Deny keeps that true if the Allow
-        is ever widened.
+        is ever widened. The last statement refuses any request to the bucket that does
+        not arrive over TLS.
         """
         policy = {
             "Version": "2012-10-17",
@@ -743,6 +744,7 @@ class PersonalDriveProvider(PublishProvider):
                     "Action": "s3:GetObject",
                     "NotResource": f"arn:aws:s3:::{bucket}/{PUBLIC_PREFIX}*",
                 },
+                engine.deny_insecure_transport_statement(bucket),
             ],
         }
         return json.dumps(policy)
