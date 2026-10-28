@@ -290,6 +290,7 @@ jobs:
         shell: bash
         run: bash packaging/build-desktop.sh
         env:
+          BUNDLE_KIRO_CLI: "1"
           # There is no certificate on the runner: the private key lives in the
           # signing service. Signing goes through the custom hook
           # (website/electron/scripts/sign-windows.js, wired as
