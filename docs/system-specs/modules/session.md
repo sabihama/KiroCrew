@@ -458,6 +458,358 @@ cleanup does not read durable session metadata. Tab close retires its nudge loop
 before other asynchronous work. After the last consumer and provider stop, cleanup
 releases only the captured identity, preserving any replacement session carrier.
 
+**Crew Mode** has no field of its own. It is a UI over a conductor template
+(`kiro_crew/crew_mode.py`): a chat is in Crew Mode exactly when it is a root
+session on a conductor template, in the `template` namespace. Every conductor is Crew
+Mode: `crew_mode.conductor_agents` is the one set, every
+shipped conductor (the Crew Mode conductor, team lead, pipeline, security and ledger
+conductors) plus the configured `agent.crew_mode_agent` and `CONDUCTOR_ALIASES`. A
+chat on the agent its own stamp names is Crew Mode too (`crew_mode.runs_crew_mode`):
+the stamp (`crew_mode_agent`, on the metadata line and the slot row) only marks the
+chat as Crew Mode until the migration moves it. `agent.crew_mode_agent` is the one
+place that names the conductor; when it changes, or an update ships a new default,
+`dashboard/crew_mode_migration.py` moves every Crew Mode root onto it through
+`switch_slot_agent` (busy roots at their next idle point), keeps the work ledger keyed
+on the session, and writes one `crew_mode.migrate` audit line per move. The config
+watcher starts the migration as a background task (`schedule_on_config_change`), off
+the applier's 10 s bound, so a cancel never lands inside a switch; a cancel inside
+the switch's reset still rolls the commit back. One migration runs at a time (a
+lock). Every root not on the target is owed the move before any await, so a cancel
+leaves the unvisited ones owed, and the 15 s loop re-runs the reconcile while the
+recorded name is not yet the target. Refusals that clear on their own
+(`turn_in_flight`, `slot_subagents_running`, `session_rebound`,
+`history_unavailable`, and `crew_mode_locked`: the configured name moved on mid-pass)
+are retried at the next idle point; any other refusal is audited, named in one
+dashboard notice and not retried by the loop (a config change or restart tries
+again). A pass that sees the configured name change stops there, leaving the rest
+for the task that owns the new name, so no false notice is posted. A name found
+unusable is re-checked on every idle-loop tick, so a
+template installed later is picked up without a config edit. The recorded name
+advances only when every live root is on the target. A configured name that is not an agent template that resolves, or that
+names a crewmate, moves nothing: it is logged as an error, named in one notice, and
+`crew_mode.crew_mode_agent()` keeps answering the conductor last applied, so new
+Crew Mode chats still turn on. A migration move counts no `turned_on`. The start-up
+restore learns closed roots from saved metadata (`crew_mode_migration.learn_closed_roots`,
+`crew_mode.note_roots`) inside its one coalesced slot push, so the first slot frame
+already hides their workers; its start pass learns them again and pushes a slot frame
+when a newly learned root holds a live slot. The start pass writes no stamp: a
+conductor root from before Crew Mode had a switch is Crew Mode by its template
+alone, and the stamp means the chat TURNED Crew Mode on, which is what gates the
+folder rule and the History filter, so backfilling it would take an old chat's
+folders away on a restart. So a worker whose root's tab is closed stays out of the
+session list by the persisted lineage, and out of History
+(`history_reads._without_crew_workers`) when that root turned Crew Mode on (a live
+root's stamp, a closed root's saved stamp, `crew_mode.turned_on_roots`); a conductor
+chat that never turned it on keeps its dispatched sessions in History. Session search
+(`GET /api/sessions/search` and the federated local search) applies the same rule
+over a wider ranked window, so hidden workers do not shorten the page. A remote peer's `crew_root` and `crew_mode_root` stamps survive the peer
+row allowlist (`crew_mode_root` only as a real `true`). Once the root has a user message (in its window, or rows trimmed to disk), switching it to any other agent is refused `409
+crew_mode_locked` (`agent_switch._crew_mode_lock_refusal`), and a provider-side switch
+mid-turn is vetoed in `chat_runner`; a switch onto the configured conductor in the
+`template` namespace is the one exception, whoever asks (the migration, or a person
+moving a root the migration never visited). Before the
+first user message a switch onto a template that is not a conductor passes: that is
+Crew Mode turned off. The agent
+catalog (`GET /api/agents/catalog`) carries `crew_mode_agent` and `conductor_agents`, which the dashboard reads instead of naming a
+conductor itself (`runsCrewMode` adds the slot's stamp).
+The composer switch is an ordinary
+`POST /api/chat/slots/{slot}/agent` naming the configured conductor in the `template`
+namespace. The chip shows only on an empty chat's welcome state, reads just
+"Crew Mode", and its hint (tooltip)
+reads "Turn on Crew Mode: each task runs in its own chat and reports back here."
+Pressing it hides both the memory-mode chip and the Crew Mode chip for that chat
+at once. If the server refuses the switch, the chat never turned on and both chips return.
+Until the first user message the composer's Crew Mode mark is a pressed toggle
+(`aria-pressed`, named "Crew Mode", hint "Turn off Crew Mode. You can do this until
+you send your first message."): pressing it switches back to the default agent,
+both chips and the agent picker come back at once, and the mark moves back into
+the chip. From the first message on there is no off control.
+A normal chat's agent picker lists no conductor at all (`withoutConductors` over the catalog's `conductor_agents`),
+and the keyboard agent cycle steps over the same list (`agentCycleTarget`; a
+Crew Mode chat does not cycle at all), so Crew Mode is the way into one. A
+Crew Mode chat's composer offers no agent picker: a Crew Mode mark
+(`CrewModeComposerChip`; after the first message a read-only status named "Crew
+Mode is on for this chat": the ghost and gradient text, no pill, no hover or
+pressed state, not focusable) sits where the agent chip would, and the workspace
+and model controls stay. The pressed chip moves into that mark, and turned off it
+moves back (a shared Framer Motion `layoutId`); under reduced motion it is a
+plain swap. An empty agent name on the
+switch route still stamps the configured default template.
+
+Every slot row says where it sits in Crew Mode (`crew_mode.stamp_rows`, run by
+`serialize_slots` after the parents): `crew_mode_root` is true on a Crew Mode root,
+and `crew_root` names the root on every session it dispatched, directly or through
+another worker (walked over `created_by` and the crew log's `parent`, stopping on a
+repeat; past a creator that is not listed, a closed worker, the walk follows the
+nearest open ancestor the frame resolved for that row, `parent.key`, and ends when
+there is none). The person's session lists leave
+those workers out. The dashboard reads `?crew=all` (its live slot frame carries
+every row) and filters client-side with one rule, `crewModeView`, exposed as the
+store selector `selectPersonSlots`: the chat sidebar, the Sessions page, the
+Command Bar's Needs You and Recent sessions rows, the command palette's Recents (whose Older rows are still deduped against every live
+row, so a worker never comes back there) and an artifact's Send to session all
+read it; the tab strip and a worker's own open view are not person lists and read
+every row. `GET /api/chat/slots` without `?crew=all` applies the same rule for
+other person clients (scripts, `curl`); an agent's own read (`internal_auth`) keeps
+every row, since its folder, status and lineage tools resolve rows from that list.
+Which agent conducts is read where it is used: `crew_mode.crew_mode_agent()` asks
+the live config watcher's snapshot (primed from the boot config, refreshed on each
+edit of the file), and the agent catalog and the agent switch remember the
+config they loaded, so a custom `agent.crew_mode_agent` is in force
+from gateway start.
+`?crew=roots` returns only Crew Mode roots, and the sidebar's **Crew Mode** filter
+chip (`SessionFilterKey` `crew`) narrows to them. A Crew Mode root and its workers
+are never filed into the person's folders: `session_create`, `session_fork` and
+`session_revive` create no folder path for such a caller and name only a folder
+that already exists, and `chat_folder_file_self` leaves it where it is, each
+saying so in its reply (`CREW_MODE_FOLDER_NOTE`). The server holds the same rule
+for every caller of session-control create: when the caller is a Crew Mode root or
+one of its workers (`crew_mode.slot_in_crew_tree`, the slot list's stamp rule
+applied to the live slots and the frame's parents), `create_session` still gives
+the child the named folder's declared project directory, so a worker does its work
+in the folder's repository, files it in no folder, and answers `folder_ignored:
+"crew_mode"`.
+
+The side panel lists a root's workers. `GET /api/chat/slots/{slot}/crew-workers`
+answers each worker's key, title, agent, status (`working`, `idle`,
+`needs_approval` for a tool approval, `asking` for an old question card,
+`closed` for a tab the crew log still names), group from real signals only
+(`approval` for a pending tool approval; `working` while a turn runs;
+`with_conductor` for a ledger report `blocked` or `question` whatever its reason,
+or an open question card; `done` for a closed tab, a closed ledger item or a
+`done` report; `waiting` for anything else idle, so a worker that has replied is
+never counted done), last activity, `approval` (the pending request the
+conductor's approval card shows, or null), bound work-ledger item
+(read through the board's `task_records` seam) and `summary`, the card's one
+line: the item's latest report summary, else its title (both through the
+board's egress redactor), else the worker's last reply, first line, at most
+160 characters. A closed worker's title and agent come from its saved
+session metadata (`dashboard:<key>` in the conversation log, redacted), else its
+short key (`chat-3`). A card or the breadcrumb opens a worker with a plain
+`switchSlot`, like a tab click: each session keeps its own draft, so leaving one
+needs no guard.
+
+`GET /api/chat/slots/{slot}/crew-timeline` (same gate, roots only) answers the
+root's timeline: one lane per session (the root, then its live workers, then
+closed ones), each with its title, agent and model
+and `model_source`: `served` (the backend's report), `chosen` (the session's pick) or
+`default` (the gateway's `agent.model`), which the lane shows as "Default (<name>)". `crew_timeline.derive_lane` reads each live
+slot's loaded transcript window, loaded off the loop. A closed worker's lane
+carries the saved title and agent the Workers list shows (`_closed_titles`) and
+is drawn from the newest 2,000 rows of its saved transcript
+(`read_messages_chained_tail`, off the loop); with no row left to read it has
+`record: false`, the lane shows one muted "Closed · no record" line instead of a
+track, and the closed-worker gap is named. Bars come from
+recorded rows only: a turn from the assistant row's `turn_stats.elapsed_ms`
+(an open turn runs from its user row to now while the slot runs), a tool call
+from its `🔧` row, a wait from the `🔧` row to the `✅` row an approval writes,
+from a `permission` row, or for an `ask_question` call, and point marks for
+`error` rows, `❌` rows and refused (`🚫`) tools. A bar whose end no row stamps
+ends at the next row (`end_bound: "next_row"`), or at now while the session is
+live (`"now"`). A hand-off joins the sender's `session_send` row whose recorded
+`target` is the worker to the worker's seed row: the exact envelope the server
+prepends (`[sent by session <key> via session_send]` and a blank line) on a row
+without the person's `human` marker. The `[quoted: sent by session` form is the
+server's defanged copy of a forged envelope and is left as written, in the
+timeline and in the bubble alike. Bar and mark labels go through the display
+redaction (`_redact_for_display`) before they leave. Each lane carries `group`, the
+Workers list's own group by the same rule (`_group` over the ledger's progress;
+`done` for a closed worker). The header is the elapsed time from the first row to
+the last (or now while any lane runs or waits) and the sum of `turn_stats.credits`;
+no tokens or money. Its state word is "Live" while any lane runs or waits on an
+approval, "Not started" while no lane has a recorded bar or mark (no elapsed time or
+credits then), "Finished" only when every worker is `done`, and otherwise the open
+workers' group ("Approval needed", else "Waiting on conductor", else "Waiting")
+(`timelineStateKey`). `gaps` names what is not recorded and so not drawn:
+thinking vs output inside a turn, a tool's end time, a tool's failure status,
+tokens, rows older than the loaded window, and closed workers whose saved
+transcript can no longer be read (named only when such a lane is shown). A lane
+keeps its newest 400 bars and counts the rest in `dropped_segments`.
+
+The dashboard draws this as design B. A Crew Mode root's session-list row is a
+normal session row (no fill, border or frame; hover and selected as any row): a
+solid ghost badge, a gradient "Crew Mode" eyebrow in place of the agent name
+(`.crew-eyebrow-text`, each stop pulled 30% toward the strongest text colour for
+4.5:1 on every row state), the title and time, and a stack of tiny worker ghosts coloured by
+group with "Approval needed · N" (tool approvals only) or "Done x/y" (`summarizeCrewWorkers` over the worker
+list API, the same groups the panel and the breadcrumb show; a live slot row alone
+never says done). That summary IS the row's one status line: the row's own states
+(running, an owed approval, and the rest of the resolver) outrank it, and it stands
+where the last message would, which shows instead until the worker list answers,
+so a Crew Mode row is as tall as any row. A failed worker-list read says so on that
+line (an inline `ErrorNotice` with the agent hand-off) instead of older counts. It stays in the time-sorted list. The filter menu's
+Crew Mode item is a gradient chip when on, and one line under the filters says
+workers and their folders stay out of the list. The side panel gets a **Workers**
+tab (`ViewKind` `workers`, zh-CN "成员") opened beside the board when Crew Mode is
+turned on: cards grouped Approval needed, Working, Waiting on conductor, Waiting,
+Done with counts (a sub-conductor's crew one indent step in, with a "From
+<dispatcher>" note naming its direct dispatcher, `dispatched_by` on each
+`crew-workers` row, `crew_mode.DISPATCHER_FIELD`), the worker on screen marked, a loading line while the first read
+is in flight, and a "Projects tab · coming soon" footer. A closed worker's card
+and timeline lane reopen it from its saved transcript (`reopenCrewWorker`, the
+History resume), listed under its root again. A **List | Timeline**
+switch on top (List by default; none on a phone, where the panel is a sheet
+and shows the list only, by the owner's decision) swaps the cards for the
+timeline (`CrewTimeline`): axis labels keep a measured 6px gap when the panel
+resizes, including long localized minute labels, and a minimum-width bar at the
+end stays inside its track. Lanes have the name on up to two lines (the full name
+and model are the tooltip) and the model under it (`model_source`: `served` when
+the backend reported it, `chosen` for the session's own pick, else `default`,
+shown as "Default (auto)" with the gateway's `agent.model`, and the gap
+`served_model_unreported` is then listed), bars coloured from the theme tokens
+(turn the crew gradient, tool `--info`, wait `--warn`, failure a `--danger`
+mark), each at least 6px wide, hand-offs drawn as `--aim` arrows from the
+sender's lane at its `session_send` to the worker's lane at its first row, a
+header with Live or Finished, true elapsed time and credits, and a legend whose
+(i) holds what is not recorded. Time is drawn true up to a minute per stretch
+between recorded moments and grows by half a minute per doubling past that
+(`timelineScale`), so one long wait cannot squash the short bars; the (i) says
+so whenever a stretch was drawn shorter, and axis labels sit at least 14% of
+the track apart. A live run
+has a playhead on a window rounded up past now, advanced between reads (2 s)
+unless reduced motion is on; a finished run is static and re-read every 15 s.
+Clicking a lane opens that session like a card. Under reduced motion the timeline
+draws no playhead, and while the person types in the composer it holds the last
+read still until 1.5 s after the last keystroke. Every Crew Mode root and worker
+gets the Workers tab on its strip when shown (`offerPanelView`, without taking
+focus), and the + menu offers Workers on such a slot. With a dynamic tab active,
+the idle pinned chips drop to icons below a 640px strip and the active chip is
+scrolled fully into view. Opening a worker or going back on desktop keeps the
+panel open on the target; the breadcrumb row carries the panel's open control.
+Status text on cards and on the root row wears `crew-tone-*` (warn, ok, aim and
+the quiet `muted` line), the hue mixed toward the theme's strongest text colour,
+for at least 4.5:1 on every row state (normal, hover, selected) in both themes.
+On a phone, opening a worker or going back always closes the destination's
+panel (`closeActivityPanel`), so the sheet never covers the chat it opened. A worker opened on a window narrower than 1600px
+(`CREW_WORKER_ROOMY_PX`) hides the sessions list the way preview expand does,
+and leaving the worker restores it; a person's own toggle wins and only that
+toggle is stored. In the breadcrumb only the root title takes the ellipsis.
+The steer composer is the conductor's normal composer: no ring, header or
+hint, the normal placeholder, and the conductor's footer (the read-only Crew
+Mode mark and the workspace, no agent picker). A message another session
+delivered drops its `[sent by session <key> via session_send]` line in the
+conductor" when the worker's root sent it, "From a worker" for another worker
+of the same root, "From another chat" otherwise.
+
+**Workers never ask the person.** A worker's question or blocker is its
+conductor's: a `work_report` `question`/`blocked` lands on its ledger item and wakes
+the conductor, which answers or asks the person in its own chat and relays the
+answer; every person surface shows the worker as waiting on its conductor, never
+"Needs you". A worker's `ask_question` is refused on both ask routes
+(`409 crew_worker_asks_conductor`, `ask_question._crew_worker_refusal`) with the
+`work_report` instruction as the tool's answer, so no live question card reaches
+the person. With the root's tab closed the refusal stands and says so
+(`conductor_open: false`): the question waits on the ledger until the person
+reopens the conductor. A worker's finished or paused turn raises no chime or toast
+(`turnCompletion`), and worker rows raise no needs-your-answer aggregate on the
+conductor's row (`listLanes` `wantsUser`).
+
+**The approval card.** A tool approval is the one thing a conductor cannot
+answer. While any worker of a root waits on one, the root's main pane shows a card
+per request above the composer (`CrewApprovalCards`), oldest first: the worker's
+title, its task line (its ledger item's summary or title, redacted), the exact tool,
+purpose and input (redacted again, cut at 2,000 characters), and Approve, Reject and
+Trust this worker (Trust only when the request is trust-grantable). The card reads
+the live slot rows, so a request decided anywhere else leaves at the next slot
+frame. A decision posts `POST /api/chat/slots/{slot}/crew-workers/{worker}/approve`
+`{action: approve | reject | trust, request_id, request_mid, request_instance}`:
+owner only, app tokens answered 404, the worker must be one of this live root's; it
+runs the per-slot approve route on the WORKER slot (Approve and Reject one-time and
+pinned to `request_mid`; a coordinator request, such as a spawn, has no mid and is
+pinned to its record's `request_instance` instead, and Trust is not offered for
+it; a card decision with neither pin is `400 approval_target_required`). Trust is
+that route's `trust` for the worker's own slot, in memory and gone on a restart,
+and it covers THAT worker only: the slot is marked `_trust_card_scoped`, so a
+session it creates later is born asking (`session_create.creator_trust_carries`),
+and the trust is never stored as the session's approval policy
+(`tool_approval._persistable_session_policy` answers `""` for it), so its
+`spawn_run` is not auto-approved (`parent_trusted`) and each subagent is born
+asking and reaches the card too. A session the person trusted directly still
+passes its trust on as before.
+The card is the only place a worker's approval is decided, on every surface; one
+worker's own composer in the main pane and in a Split View pane draws no approval
+band (`slotApprovalChrome` off) and says "Waiting for approval in <conductor>" with
+a link that opens it (`CrewWorkerComposerGate`); the conductor side panel's
+Approvals and attention tab lists a worker's request as information with an "Open
+the approval card" link and no Approve or Reject; a Split View pane showing the
+conductor keeps its approval cards. A decision posted from the worker's own pane
+is not refused server-side. The worker's own approval note, chime, banner and
+badge are not raised (`approvals.ts`); the conductor's row shows one "Approval
+needed" count instead, and All Dashboards shows the conductor as waiting on a tool
+decision (in Needs you, with an Open session link) while any of its workers waits.
+The permission row in the worker's own transcript stays. Split View's pane picker
+and the Session Dashboards page list no worker (`crewModeView`).
+
+A root session whose page is `goal-board` or `work-kanban` gets one more
+`[DASHBOARD]` line (`BOARD_IN_PANEL_LINE`): the page is the task board, so the
+reply carries no task board, table or `task-dashboard` artifact. A widget an
+agent fills with markdown instead of HTML (no element tag in its body) renders
+as that markdown under its title rather than as raw text in the frame. A card opens the
+worker in the MAIN pane like any session with the Workers tab in front of its
+panel; on a phone the panel sheet closes. The worker view's header is a
+breadcrumb (`CrewWorkerBreadcrumb`: ghost, root title, worker, status; for a worker a
+sub-conductor dispatched, root title › sub-conductor › worker, the crumbs above the
+worker being buttons that open those sessions and the middle one truncating first).
+The root's gradient clips only its title span, never the button containing the
+solid ghost badge, so the badge's own background paints independently. On desktop
+with the sessions list collapsed, the header keeps the title row's 60px left inset
+to clear the stationary sessions toggle; on a phone or beside an open list it
+keeps its normal 16px inset. Names can shrink at every pane width; below a 640px
+breadcrumb the status word and Back label give way to the named dot and arrow,
+so a narrow split or page zoom keeps both navigation controls in view. The header has
+"Back to main chat" (with the root's tab closed: its saved title and the worker's
+real group, both read from saved data by the worker list, which answers a closed
+root with `root_closed: true` and `root_title`; a line saying the conductor is
+closed; and "Reopen main chat", which reopens it from its saved transcript). With
+the root closed the worker's composer is off and says "Reopen <conductor> to keep
+working" with a Reopen button, and `POST /api/chat` refuses a person's send to that
+worker (`409 crew_root_closed`) before anything is queued, the same live-root
+admission as the steer route. Its composer is otherwise the
+steer composer: it looks like the conductor's normal composer, and
+`busyMode="steer-only"` makes a running turn take the text as a steer. `POST /api/chat/slots/{slot}/crew-workers/{worker}/steer`
+types `{message}` into one of them as the person: it cuts into a running turn
+(`steer_into_running_turn`, `user_origin=True`) or queues for the next one and
+starts an idle worker (`queue_for_next_turn`, `directive_user_origin=True`, which
+also persists the entry and sends the `queue_push` frame, so the queued card shows);
+the start takes the composer's default, so with the worker's sub-agents still
+running the drain holds the text until they finish and the reply says `queued`; the
+helpers the composer's own Steer uses, so the transcript shows the person's
+message with no peer envelope. Every person steer, from that route or from the
+worker's own composer (`POST /api/chat` on a worker, `chat_send.api_chat`), runs
+one transaction (`crew_workers.person_steer`) at delivery: a send that was only
+queued is recorded when the drain hands it to the worker, with its text as edited
+then, and a queued send cancelled first records nothing (the receipt says
+`ledger_pending`); both routes mark the entry (`chat_send.mark_crew_steer`). The
+mark's durable half is a bare `crewSteer` flag in the entry's `meta` (server-set
+only, a reserved row meta key), so an entry restored after a restart is still
+recorded when it is delivered, only while its slot is a live worker, with its root
+re-derived from the live slots and the text prefixed "[queued before a restart]".
+One redacted
+`steer` event on the ledger that holds the worker's item (its own binding when that
+board is the root or a session in the root's tree, so a sub-conductor's ledger
+included; else the root's), into the worker's live crew-log unit, else the board's,
+else the board's newest recorded work unit, so it lands when the root has no live
+session. The reply carries `ledger_event` (the item id) or `ledger_error`
+(`no_item`, `crew_log_off`, `crew_log_unit_unknown`, `not_recorded`), and a
+delivered steer with a `ledger_error` gets one muted line under the worker's
+composer: one localized sentence per code ("Delivered to <worker>, but not recorded
+on the ledger: the worker has no open task", "... the crew log is off", "... the
+ledger write failed"), and a generic one for an unknown code; never the raw code
+(`steerUnrecordedLine`). Both paths
+refuse a message over 50,000 characters (`message_too_long`) before anything is
+queued, and the composer keeps the draft and says so. A `steer` newer than a
+worker's `question` report answers it on the board (`_is_outstanding`). Both routes take the root dashboard read's gate
+(app tokens answered 404, owner only) and reach only a session stamped with that
+root; any other target is `404 not_a_worker`. Opening a worker shows it in the main
+view like any session, with a way back to its root. Turning it on in a root session
+also opens the side panel's Dashboard view, whose Overview is the session's own
+Dynamic Dashboard. The switch to the conductor adopts `goal-board` on that page while
+nothing else is adopted, and each turn's `[DASHBOARD]` block then names it, so the
+conductor's task board lives there instead of in its replies.
+A person who wants every new chat
+on the conductor sets it as the default agent (`agent.default_agent`); the switch
+is then not offered, since every chat already starts on the conductor.
+
 ## Private member session ownership
 
 The section name is retained for existing documentation links. Member memory is

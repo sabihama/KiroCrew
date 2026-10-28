@@ -304,6 +304,9 @@ async def api_sessions(request: web.Request) -> web.Response:
             return [s for s in sessions if _is_user_listed_row(log, s)]
 
         all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
+        # A Crew Mode chat's workers are listed in its side panel, never in the
+        # person's own lists, History included, even after their root's tab closed.
+        all_sessions = _without_crew_workers(state, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
     # one list. The client advances its offset by the number of rows it received,
     # so filtering on its side instead would skip or repeat rows across pages.
@@ -361,6 +364,63 @@ async def api_sessions(request: web.Request) -> web.Response:
     )
 
 
+def _without_crew_workers(state: DashboardState, sessions: list[dict]) -> list[dict]:
+    """*sessions* without the ones a root that turned Crew Mode on dispatched. No I/O.
+
+    By the persisted lineage: the crew log's session tree and each row's saved
+    ``created_by``, walked up to a known root carrying the Crew Mode stamp (a live
+    one, one the gateway learned from saved metadata, or a row here that is one).
+    Any fault keeps the list as it is: hiding is never worth losing a session from view.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.crew_mode_migration import history_slot_key
+
+    try:
+        parents = crew_mode.persisted_parents()
+        # A saved ``created_by`` stands in only for a slot the session tree holds no
+        # node for (one from before the crew log recorded), the way the slot list's
+        # ``stamp_rows`` reads it: a tracked node with no parent edge is a session
+        # ``session_release`` let go, and its birth stamp must not pull it back.
+        tracked = crew_mode.persisted_tree_slots()
+        created_by: dict[str, str] = {}
+        # Only a root that TURNED Crew Mode on (its stamp) hides its crew members, the
+        # way the folder rule reads it: a conductor chat from before Crew Mode had a
+        # switch keeps its dispatched sessions in History, and the Crew panel that
+        # lists them lands with the UI.
+        roots = set(crew_mode.turned_on_roots())
+        roots.update(
+            key
+            for key, slot in list(state._slots.items())
+            if getattr(slot, crew_mode.STAMP_FIELD, "") and crew_mode.slot_is_crew_mode_root(slot)
+        )
+        for row in sessions:
+            slot_key = history_slot_key(str(row.get("key") or ""))
+            creator = row.get("created_by")
+            if isinstance(creator, str) and creator:
+                if tracked is None or slot_key not in tracked:
+                    created_by[slot_key] = creator
+            elif (
+                row.get(crew_mode.STAMP_FIELD)
+                and slot_key not in parents
+                and crew_mode.saved_row_is_root(row)
+            ):
+                # The persisted lineage outranks the birth stamp: an adopted
+                # conductor's saved line still says "no creator".
+                roots.add(slot_key)
+        if not roots:
+            return sessions
+        return [
+            row
+            for row in sessions
+            if not crew_mode.persisted_root_of(
+                history_slot_key(str(row.get("key") or "")), parents, roots, created_by
+            )
+        ]
+    except Exception:
+        logger.debug("history: Crew Mode worker filter failed", exc_info=True)
+        return sessions
+
+
 class _AppOwnedKeys:
     """The transcript keys *request_app* owns, judged per lookup.
 
@@ -409,9 +469,14 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         sessions = await asyncio.to_thread(_app_search, log, request_app, q, limit)
         _audit_app_allow(request_app, "session_search", f"sessions={len(sessions)}")
     else:
+        # Ranked over a wider window, then the person's view is applied, so the
+        # Crew Mode workers it leaves out cannot shorten the page below *limit*.
         sessions = await asyncio.get_running_loop().run_in_executor(
-            None, state.conversation_log.search_sessions, q, limit
+            None, state.conversation_log.search_sessions, q, min(limit * 4, 800)
         )
+        # A Crew Mode chat's workers stay out of the person's search too, the same
+        # rule the History list applies (``_without_crew_workers``).
+        sessions = _without_crew_workers(state, sessions)[:limit]
     for s in sessions:
         for field in SESSION_SEARCH_TEXT_FIELDS:
             value = s.get(field)
