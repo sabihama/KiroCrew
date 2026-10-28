@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,27 @@ _MAP_MAX = 64
 
 _lock = threading.RLock()
 
+#: The default agent's template name.
+DEFAULT_TEMPLATE = "kirocrew"
+#: The worker's template name. Its additions are its OWN entry, merged onto the
+#: mirror of the default agent, so a worker grant never reaches default sessions.
+WORKER_TEMPLATE = "kirocrew-worker"
+#: Templates whose installer rebuilds their spec and merges the record into it.
+#: Every other template (a third-party or other custom agent) is merged at spawn
+#: instead, never into its spec file (:func:`merge_at_spawn`).
+INSTALLER_MERGED_TEMPLATES: frozenset[str] = frozenset(
+    {
+        DEFAULT_TEMPLATE,
+        WORKER_TEMPLATE,
+        "kirocrew-conductor",
+        "kirocrew-ledger-conductor",
+        "kirocrew-pipeline-conductor",
+        "kirocrew-security-conductor",
+    }
+)
+#: A deprecated alias emits its successor's spec, so it reads its successor's record.
+_TEMPLATE_ALIASES: dict[str, str] = {"kirocrew-ledger-conductor": "kirocrew-conductor"}
+
 
 class AdditionError(ValueError):
     """A refused addition: the message is a short machine-readable reason."""
@@ -111,7 +133,11 @@ def read_additions(template: str) -> dict[str, McpAddition]:
     """
     if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
         return {}
-    return _parse_template(template, _read().get("templates", {}).get(template))
+    template = _TEMPLATE_ALIASES.get(template, template)
+    templates = _read().get("templates", {})
+    if not isinstance(templates, dict):
+        return {}
+    return _parse_template(template, templates.get(template))
 
 
 def list_additions() -> dict[str, dict[str, McpAddition]]:
@@ -217,6 +243,165 @@ def merge_into(template: str, servers: Mapping[str, Any] | None) -> dict[str, An
             continue
         merged[name] = copy.deepcopy(dict(addition.entry))
     return merged
+
+
+def merge_into_spec(template: str, spec: dict[str, Any]) -> list[str]:
+    """Merge *template*'s additions into *spec* IN PLACE; the names it added.
+
+    :func:`merge_into` on ``spec["mcpServers"]``, plus the ``@server`` reference in
+    ``tools`` that makes the server's tools reachable at all (kiro-cli mounts a
+    declared server's tools only when ``tools`` names it). That reference is not a
+    grant: ``allowedTools`` and ``autoApprove`` are never touched, so every call
+    still reaches the PreToolUse gate. A ``tools`` that is absent or not a list is
+    left alone -- an absent one is the harness default and a malformed one is the
+    spec owner's to fix, not this merge's to widen.
+    """
+    servers = spec.get("mcpServers")
+    if servers is not None and not isinstance(servers, dict):
+        return []
+    merged = merge_into(template, servers)
+    added = [name for name in merged if name not in (servers or {})]
+    if not added:
+        return []
+    spec["mcpServers"] = merged
+    tools = spec.get("tools")
+    if isinstance(tools, list):
+        for name in added:
+            ref = f"@{name}"
+            if ref not in tools:
+                tools.append(ref)
+    return added
+
+
+@dataclass(frozen=True)
+class AdditionSupport:
+    """Whether an addition to *template* reaches its sessions on *backend*.
+
+    ``reason`` is empty when ``supported``; otherwise it is the short sentence a
+    card refusal shows. ``supported`` says nothing about a RUNNING session: whether
+    the change reaches one without a reset is the existing live gate
+    (``mcp_hot_reload.live_sessions_apply_mcp_live``), asked by the caller over the
+    live providers.
+    """
+
+    supported: bool
+    reason: str = ""
+
+
+#: The refusal for a template Crew does not own on a backend that loads it off disk.
+UNSUPPORTED_REASON = (
+    "This agent's definition is not managed by Kiro Crew, and on this harness the "
+    "agent is loaded from its own file. Kiro Crew never writes into a definition it "
+    "does not own, so a server cannot be added to it here."
+)
+
+
+def addition_support(template: str, backend: str) -> AdditionSupport:
+    """Whether an addition to *template* reaches its sessions on *backend*.
+
+    A template Crew owns (:data:`INSTALLER_MERGED_TEMPLATES`) is merged by its
+    installer into the spec every backend reads, so it is supported everywhere.
+    Any other template is merged at spawn, which only the backends in
+    ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN`` take (a positive membership test,
+    per harness parity); on the rest -- kiro-cli first among them -- the answer is
+    unsupported with :data:`UNSUPPORTED_REASON`.
+    """
+    if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
+        return AdditionSupport(False, "That agent name is not valid.")
+    if template in INSTALLER_MERGED_TEMPLATES:
+        return AdditionSupport(True)
+    from kiro_crew.acp_backends import ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN
+
+    if backend in ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN:
+        return AdditionSupport(True)
+    return AdditionSupport(False, UNSUPPORTED_REASON)
+
+
+def merge_at_spawn(template: str | None, spec: dict[str, Any] | None) -> dict[str, Any] | None:
+    """*spec* as a session of a template Crew does NOT own should read it at spawn.
+
+    Returns a NEW dict with the additions merged (:func:`merge_into_spec`) for a
+    template outside :data:`INSTALLER_MERGED_TEMPLATES`; returns *spec* itself for a
+    Crew-owned template (its installer already merged them into the file), for
+    ``None``, and when there is nothing to add. Never writes any file. Called only
+    from the spawn reads of the backends in ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``.
+    """
+    if not template or not isinstance(spec, dict) or template in INSTALLER_MERGED_TEMPLATES:
+        return spec
+    if not read_additions(template):
+        return spec
+    out = copy.deepcopy(spec)
+    merge_into_spec(template, out)
+    return out
+
+
+def additions_digest(template: str) -> str:
+    """A content digest of *template*'s additions, for a freshness check to compare.
+
+    Covers the entries only, not the provenance: re-approving the same entry on a
+    new card launches the same server, so it is not a different generation.
+    """
+    payload = json.dumps(
+        {name: dict(add.entry) for name, add in read_additions(template).items()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def project_into_rendered_spec(
+    template: str, spec: dict[str, Any], *, claimed: frozenset[str] = frozenset()
+) -> list[str]:
+    """Bring a spec that is rebuilt FROM ITS OWN FILE in line with the record.
+
+    The conductor installers and the worker mirror rebuild their ``mcpServers``
+    from scratch, so :func:`merge_into_spec` is all they need. The default agent's
+    rebuild starts from the file on disk instead, so a removed addition would
+    survive there as if the user had written it. This tracks what it projected (a
+    ``projected`` map in the record, never in the spec) and, on the next pass,
+    drops a projected name the record no longer holds -- the entry and its
+    ``@server`` reference -- unless another source in *claimed* now declares it.
+    Grants the user made on that server separately are left to the rebuild's own
+    dangling-reference pass. Returns the names this pass added.
+    """
+    current = read_additions(template)
+    with _locked():
+        try:
+            data = _read(strict=True)
+        except (OSError, ValueError):
+            # Unreadable record: project nothing new and remove nothing. Removal
+            # needs the bookkeeping, and guessing it from the spec would drop
+            # entries the user wrote.
+            logger.warning("Template MCP additions record unreadable; projection skipped")
+            return []
+        projected = data.setdefault("projected", {})
+        if not isinstance(projected, dict):
+            projected = data["projected"] = {}
+        before = projected.get(template)
+        before_names = {n for n in before if isinstance(n, str)} if isinstance(before, list) else set()
+        servers = spec.get("mcpServers")
+        servers = dict(servers) if isinstance(servers, dict) else {}
+        tools = spec.get("tools")
+        for name in sorted(before_names - set(current) - set(claimed)):
+            servers.pop(name, None)
+            if isinstance(tools, list):
+                spec["tools"] = tools = [t for t in tools if t != f"@{name}"]
+        spec["mcpServers"] = servers
+        added = merge_into_spec(template, spec)
+        # A name stays projected while the record holds it and the spec carries
+        # the projected copy (added now, or added on an earlier pass).
+        now = sorted(
+            name
+            for name in current
+            if name in added or (name in before_names and name in spec["mcpServers"])
+        )
+        if now != sorted(before_names):
+            if now:
+                projected[template] = now
+            else:
+                projected.pop(template, None)
+            _write(data)
+    return added
 
 
 def validate_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
