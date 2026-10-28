@@ -17,11 +17,28 @@ import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { useComposerArrivals } from '../../../utils/composerSendHolds'
 import { useMoveSlotToFolder } from '../../../hooks/useMoveSlotToFolder'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
-import type { ChatMessage } from '../../../types'
+import type { ChatMessage, ChatSlot } from '../../../types'
+import { crewModeView } from '../../../lib/crewMode'
 import { useConnectionsUiEnabled } from '../../../hooks/useConnectionsUi'
 import { isChatPageSurface } from '../../../utils/channelOrigin'
 import { useGuidePredicate, useGuideSelection } from '../../../guide/guidePredicates'
 import { fetchDashboardConfig } from '../../../api/dashboardConfigQuery'
+
+/** The chat page's own session rows: chat-surface slots, with a Crew Mode root's
+ *  crew members left out (`crewModeView`; the server keeps them in the slot frame
+ *  under `?crew=all`, and their root's Crew panel shows them). One function, so
+ *  the sidebar, the collapsed-sidebar flyout and the unread count agree. */
+export function chatPageSlots<T extends ChatSlot>(slots: T[]): T[] {
+  return crewModeView(slots).filter(s => isChatPageSurface(s.surface ?? s.mode))
+}
+
+/** The unread keys among *visible* rows: a crew member's unread never counts on
+ *  the person's surface, because it is not one of its rows. */
+export function surfaceUnreadKeys(unread: string[], visible: readonly { key: string }[]): string[] {
+  if (unread.length === 0) return []
+  const visibleKeys = new Set(visible.map(s => s.key))
+  return unread.filter(k => visibleKeys.has(k))
+}
 
 /** Stable empty set so the mcpApps-derived selector returns a referentially
  *  equal value when the slot has no app renders (avoids useless re-renders). */
@@ -114,12 +131,11 @@ export function useChatPageEnvironment({
   // A user-facing switch gesture hit a session the server no longer has
   // (#6372); rendered through the pane ErrorNotice in ChatPage (errors-use-error-notice).
   const switchSlotGone = useAppSelector(s => s.chat.switchSlotGone)
-  // Unified chat view: show default and crew slots together.
-  // App-owned worker slots (s.app) are excluded by the sidebar itself.
-  const filteredSlots = useMemo(
-    () => slots.filter(s => isChatPageSurface(s.surface ?? s.mode)),
-    [slots],
-  )
+  // The chat page's own rows (`chatPageSlots`): every reader below -- the
+  // sidebar, the collapsed-sidebar flyout, the unread count, the guide
+  // predicate -- gets the same list, so a Crew Mode root's crew members are left
+  // out once, here. App-owned worker slots (s.app) are excluded by the sidebar itself.
+  const filteredSlots = useMemo(() => chatPageSlots(slots), [slots])
   const filteredSlotsRef = useRef(filteredSlots)
   filteredSlotsRef.current = filteredSlots
   // Live guide predicates the sessions sidebar toggle needs to be drawn (see
@@ -129,14 +145,7 @@ export function useChatPageEnvironment({
   useGuidePredicate('full_dashboard', embedMode !== 'chat' && embedMode !== 'sessions')
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   // Unified view: unread keys for all chat-like slots.
-  const surfaceUnreadSlots = useMemo(
-    () => {
-      if (unreadSlots.length === 0) return []
-      const visibleKeys = new Set(filteredSlots.map(s => s.key))
-      return unreadSlots.filter(k => visibleKeys.has(k))
-    },
-    [unreadSlots, filteredSlots],
-  )
+  const surfaceUnreadSlots = useMemo(() => surfaceUnreadKeys(unreadSlots, filteredSlots), [unreadSlots, filteredSlots])
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const connected = useConnected()
   // Create-in-flight, so the flyout's New button can go inert exactly like the
