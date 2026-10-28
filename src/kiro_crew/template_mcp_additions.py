@@ -1,0 +1,392 @@
+"""Per-template MCP server additions, kept OUTSIDE every agent spec file.
+
+An agent template's ``mcpServers`` map is rewritten by its installer: the conductor
+installers rebuild theirs to exactly the Crew servers on every pass, the worker
+mirrors the default agent, and a third-party custom agent may be rewritten by its
+own installer. A server the user approved for a template therefore cannot live in
+the spec file -- the next rebuild would wipe it, or a hand edit and an approved
+grant would look the same. This module is the record that survives: one JSON file
+under the data home, keyed by template name, each entry a GATEWAY-RESOLVED server
+entry plus who approved it, when, and on which change card.
+
+What the record never carries is trust. An entry holds how to launch or reach a
+server and nothing about which of its tools run without asking: ``autoApprove``,
+``allowedTools`` and every other key outside :data:`ENTRY_KEYS` are refused on
+write and dropped again on merge, so a hand-edited file cannot smuggle a grant in
+either. The merged server's tools prompt like any other until the user grants them
+through the existing paths, which still pass ``_filter_auto_approve``.
+
+:func:`merge_into` is the one function every template's ``mcpServers`` passes
+through on its way to a session (the conductor installers, the worker mirror, the
+default agent, and the spawn of a third-party custom agent). It only ADDS: a server
+name the template already carries is left exactly as the template has it.
+
+The file is owner-only, every write is atomic, and every read-modify-write holds
+an in-process lock plus a cross-process advisory lock on a sidecar file.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import copy
+import datetime
+import json
+import logging
+import os
+import re
+import stat
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.paths import config_dir
+
+logger = logging.getLogger(__name__)
+
+#: File name under the data home.
+RECORD_FILENAME = "template_mcp_additions.json"
+RECORD_VERSION = 1
+RECORD_MAX_BYTES = 1024 * 1024
+
+#: The only keys an addition's server entry may carry: how to launch or reach the
+#: server. Nothing here grants a tool. ``autoApprove`` / ``allowedTools`` /
+#: ``disabledTools`` and anything else are refused on write and dropped on merge.
+ENTRY_KEYS: frozenset[str] = frozenset(
+    {"command", "args", "env", "url", "headers", "type", "timeout"}
+)
+
+#: Keys whose presence on an entry is a trust grant. Named separately only so the
+#: refusal can say why; :data:`ENTRY_KEYS` is the rule.
+TRUST_KEYS: frozenset[str] = frozenset(
+    {"autoApprove", "alwaysAllow", "allowedTools", "tools", "toolsSettings", "trust"}
+)
+
+_TEMPLATE_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+_SERVER_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+_TEXT_MAX = 256
+_ARG_MAX = 4096
+_ARGS_MAX = 128
+_MAP_MAX = 64
+
+_lock = threading.RLock()
+
+
+class AdditionError(ValueError):
+    """A refused addition: the message is a short machine-readable reason."""
+
+
+@dataclass(frozen=True)
+class McpAddition:
+    """One approved server on one template."""
+
+    template: str
+    server: str
+    entry: Mapping[str, Any] = field(repr=False)
+    approved_by: str
+    approved_at: str
+    card_id: str
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "entry": copy.deepcopy(dict(self.entry)),
+            "approved_by": self.approved_by,
+            "approved_at": self.approved_at,
+            "card_id": self.card_id,
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Public API
+# --------------------------------------------------------------------------- #
+
+
+def read_additions(template: str) -> dict[str, McpAddition]:
+    """The additions recorded for *template*, server name -> addition.
+
+    Lenient: an absent, unreadable or malformed record reads as no additions, and
+    an individual entry that fails validation is skipped (and logged), so a damaged
+    file degrades to the template as shipped rather than breaking a spawn.
+    """
+    if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
+        return {}
+    return _parse_template(template, _read().get("templates", {}).get(template))
+
+
+def list_additions() -> dict[str, dict[str, McpAddition]]:
+    """Every template's additions, template -> server -> addition (lenient)."""
+    out: dict[str, dict[str, McpAddition]] = {}
+    templates = _read().get("templates", {})
+    if not isinstance(templates, dict):
+        return out
+    for template in sorted(templates):
+        if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
+            continue
+        parsed = _parse_template(template, templates[template])
+        if parsed:
+            out[template] = parsed
+    return out
+
+
+def add_addition(
+    template: str,
+    server: str,
+    entry: Mapping[str, Any],
+    *,
+    approved_by: str,
+    card_id: str,
+    approved_at: str | None = None,
+) -> McpAddition:
+    """Record *server* on *template* and return the stored addition.
+
+    *entry* must be the gateway-resolved server entry (never an agent-supplied
+    launch line) and carry only :data:`ENTRY_KEYS`; a trust key is refused with
+    ``AdditionError("trust_key:<key>")``. Recording a server the template already
+    has an addition for replaces that addition (the newer approval wins).
+    Raises :class:`AdditionError` on a refused input and ``OSError`` /
+    ``ValueError`` when an existing record cannot be read (it is never overwritten
+    blind).
+    """
+    _check_template(template)
+    _check_server(server)
+    clean = validate_entry(entry)
+    who = _check_text(approved_by, "approved_by")
+    card = _check_text(card_id, "card_id")
+    when = approved_at if approved_at is not None else _now()
+    _check_text(when, "approved_at")
+    addition = McpAddition(
+        template=template,
+        server=server,
+        entry=clean,
+        approved_by=who,
+        approved_at=when,
+        card_id=card,
+    )
+    with _locked():
+        data = _read(strict=True)
+        templates = data.setdefault("templates", {})
+        if not isinstance(templates, dict):
+            raise ValueError("template_mcp_additions_invalid")
+        bucket = templates.setdefault(template, {})
+        if not isinstance(bucket, dict):
+            raise ValueError("template_mcp_additions_invalid")
+        bucket[server] = addition.to_record()
+        _write(data)
+    return addition
+
+
+def remove_addition(template: str, server: str, *, card_id: str | None = None) -> bool:
+    """Remove *server* from *template*'s additions; whether anything was removed.
+
+    With *card_id*, remove only when the stored addition came from that card, so a
+    stale Undo cannot take away a later approval of the same server.
+    """
+    _check_template(template)
+    _check_server(server)
+    with _locked():
+        data = _read(strict=True)
+        templates = data.get("templates")
+        if not isinstance(templates, dict):
+            return False
+        bucket = templates.get(template)
+        if not isinstance(bucket, dict) or server not in bucket:
+            return False
+        stored = bucket[server]
+        if card_id is not None and (
+            not isinstance(stored, dict) or stored.get("card_id") != card_id
+        ):
+            return False
+        del bucket[server]
+        if not bucket:
+            del templates[template]
+        _write(data)
+    return True
+
+
+def merge_into(template: str, servers: Mapping[str, Any] | None) -> dict[str, Any]:
+    """*servers* plus *template*'s recorded additions, as a new map.
+
+    ADD-only: a server name *servers* already carries keeps the template's own
+    entry. Each added entry is rebuilt from :data:`ENTRY_KEYS` alone, so no trust
+    key reaches a spec even from a hand-edited record. *servers* is not mutated.
+    """
+    merged: dict[str, Any] = dict(servers or {})
+    for name, addition in read_additions(template).items():
+        if name in merged:
+            continue
+        merged[name] = copy.deepcopy(dict(addition.entry))
+    return merged
+
+
+def validate_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a clean copy of a server entry, or raise :class:`AdditionError`."""
+    if not isinstance(entry, Mapping):
+        raise AdditionError("entry_not_object")
+    for key in entry:
+        if key in TRUST_KEYS:
+            raise AdditionError(f"trust_key:{key}")
+        if key not in ENTRY_KEYS:
+            raise AdditionError(f"unknown_key:{key}")
+    clean: dict[str, Any] = {}
+    command = entry.get("command")
+    url = entry.get("url")
+    if (command is None) == (url is None):
+        raise AdditionError("entry_needs_command_or_url")
+    if command is not None:
+        clean["command"] = _check_text(command, "command", limit=_ARG_MAX)
+        args = entry.get("args", [])
+        if not isinstance(args, list) or len(args) > _ARGS_MAX:
+            raise AdditionError("args_invalid")
+        clean["args"] = [_check_text(a, "args", limit=_ARG_MAX, allow_empty=True) for a in args]
+    else:
+        if "args" in entry:
+            raise AdditionError("args_without_command")
+        clean["url"] = _check_text(url, "url", limit=_ARG_MAX)
+    for key in ("env", "headers"):
+        if key in entry:
+            clean[key] = _check_str_map(entry[key], key)
+    if "type" in entry:
+        clean["type"] = _check_text(entry["type"], "type")
+    if "timeout" in entry:
+        timeout = entry["timeout"]
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 0 < timeout <= 3_600_000:
+            raise AdditionError("timeout_invalid")
+        clean["timeout"] = timeout
+    return clean
+
+
+def record_path() -> Path:
+    """Where the record lives (resolved per call so ``KIROCREW_HOME`` is honoured)."""
+    return config_dir() / RECORD_FILENAME
+
+
+# --------------------------------------------------------------------------- #
+# Internals
+# --------------------------------------------------------------------------- #
+
+
+def _parse_template(template: str, bucket: Any) -> dict[str, McpAddition]:
+    out: dict[str, McpAddition] = {}
+    if not isinstance(bucket, dict):
+        return out
+    for server in sorted(bucket):
+        stored = bucket[server]
+        try:
+            _check_server(server)
+            if not isinstance(stored, dict):
+                raise AdditionError("addition_not_object")
+            out[server] = McpAddition(
+                template=template,
+                server=server,
+                entry=validate_entry(stored.get("entry")),
+                approved_by=_check_text(stored.get("approved_by"), "approved_by"),
+                approved_at=_check_text(stored.get("approved_at"), "approved_at"),
+                card_id=_check_text(stored.get("card_id"), "card_id"),
+            )
+        except AdditionError as exc:
+            logger.warning(
+                "Skipping unusable MCP addition %r on template %r: %s", server, template, exc
+            )
+    return out
+
+
+def _check_template(template: object) -> None:
+    if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
+        raise AdditionError("template_invalid")
+
+
+def _check_server(server: object) -> None:
+    if not isinstance(server, str) or not _SERVER_RE.fullmatch(server):
+        raise AdditionError("server_invalid")
+
+
+def _check_text(value: object, what: str, *, limit: int = _TEXT_MAX, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not value and not allow_empty) or len(value) > limit:
+        raise AdditionError(f"{what}_invalid")
+    if "\x00" in value:
+        raise AdditionError(f"{what}_invalid")
+    return value
+
+
+def _check_str_map(value: object, what: str) -> dict[str, str]:
+    if not isinstance(value, Mapping) or len(value) > _MAP_MAX:
+        raise AdditionError(f"{what}_invalid")
+    out: dict[str, str] = {}
+    for key, item in value.items():
+        out[_check_text(key, what)] = _check_text(item, what, limit=_ARG_MAX, allow_empty=True)
+    return out
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+@contextlib.contextmanager
+def _locked() -> Iterator[None]:
+    """In-process lock plus a cross-process advisory lock on a sidecar file."""
+    with _lock:
+        from kiro_crew.platform_compat import file_lock
+
+        lock_path = record_path().with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            0o600,
+        )
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("template_mcp_additions_lock_invalid")
+            with file_lock(fd, exclusive=True, wait=True):
+                yield
+        finally:
+            os.close(fd)
+
+
+def _read(*, strict: bool = False) -> dict[str, Any]:
+    """Load the record. ``strict`` (mutators) raises on a present-but-unreadable file."""
+    path = record_path()
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("template_mcp_additions_invalid")
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0),
+        )
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > RECORD_MAX_BYTES:
+                raise ValueError("template_mcp_additions_invalid")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(RECORD_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > RECORD_MAX_BYTES:
+            raise ValueError("template_mcp_additions_too_large")
+        data = json.loads(raw)
+    except FileNotFoundError:
+        return {"version": RECORD_VERSION, "templates": {}}
+    except (OSError, ValueError):
+        if strict:
+            raise
+        logger.warning("Template MCP additions record unreadable: %s", path, exc_info=True)
+        return {"version": RECORD_VERSION, "templates": {}}
+    if not isinstance(data, dict) or data.get("version") != RECORD_VERSION:
+        if strict:
+            raise ValueError("template_mcp_additions_invalid")
+        return {"version": RECORD_VERSION, "templates": {}}
+    return data
+
+
+def _write(data: dict[str, Any]) -> None:
+    data["version"] = RECORD_VERSION
+    payload = json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    if len(payload.encode("utf-8")) > RECORD_MAX_BYTES:
+        raise ValueError("template_mcp_additions_too_large")
+    atomic_write(record_path(), payload, restrict_to_owner=True)
