@@ -14159,7 +14159,13 @@
           "synced": "হালনাগাদ আছে"
         },
         "added_by_agent": "○ এজেন্ট যোগ করেছে",
-        "updates_when_the_agent_adds_a_document": "এজেন্ট কোনো নথি যোগ করলে আপডেট হয়; সিঙ্ক করার কিছু নেই"
+        "updates_when_the_agent_adds_a_document": "এজেন্ট কোনো নথি যোগ করলে আপডেট হয়; সিঙ্ক করার কিছু নেই",
+        "web_page": "ওয়েব পেজ",
+        "page_url": "পেজের URL",
+        "page_url_e_g": "পেজের URL (যেমন https://example.com/article)",
+        "add_page": "পেজ যোগ করো",
+        "web_page_hosts_allowed": "HTTPS দিয়ে একটি পেজ আনে। অনুমোদিত হোস্ট: {{hosts}}। আরও হোস্ট knowledge.doc_ingest_hosts-এ যোগ করো।",
+        "web_page_no_hosts_allowed": "HTTPS দিয়ে একটি পেজ আনে, শুধু knowledge.doc_ingest_hosts-এ থাকা হোস্ট থেকে। তালিকাটি খালি, তাই আগে পেজের হোস্ট সেখানে যোগ করো।"
       },
       "settings": {
         "title": "Ingestion Settings",

@@ -28,6 +28,17 @@ from kiro_crew.testing.wait import await_until
 # ------------------------------------------------------------ agent document
 
 
+@pytest.fixture(autouse=True)
+def _listed_test_hosts(_floor_monkeypatch):
+    """List the hosts these sources name in ``knowledge.doc_ingest_hosts``.
+
+    A source with no connector is fetched by Kiro Crew only from a listed host,
+    and the list is empty by default; these tests exercise what happens after
+    that gate lets the URL through.
+    """
+    _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com", "e.test"])
+
+
 class TestAddAgentDocumentRoute:
     @pytest.mark.asyncio
     async def test_disabled_toggle_is_403(self, store, monkeypatch):

@@ -545,6 +545,22 @@ ingested. The chunk figure is derived from the chunker's target size and file by
 (`_estimated_chunks`), never measured: it exists to show order of magnitude before the
 user confirms, and no code path treats it as a bound.
 
+**Web-page sources and the fetch allowlist.** A source with no connector (the
+dashboard's Web Page type is `url`) is synced by `agent_fetch.fetch_url_content`
+through the URL-fetch pool. Kiro Crew fetches it, so `knowledge.doc_ingest_hosts`
+gates it, read fresh on every use. `agent_fetch.url_fetch_refusal` is the one rule:
+`https://` only, port 443 or none, no userinfo, no backslash, whitespace or control
+character, an ASCII host, and that host equal to a listed entry (case and a
+trailing dot aside, no subdomain match). It runs at three points: `add_source`
+refuses the row (403 `url_host_not_allowed`, otherwise 400 with the rule's code),
+`POST /sources/{id}/sync` refuses before any status write, and `fetch_url_content`
+raises `UrlFetchRefused` before a worker is acquired, so a host removed after the
+request was accepted is still not fetched. The list is empty by default, so a
+default config fetches nothing. The fetching worker's own tool may follow a
+redirect off the listed host; the gate bounds what Kiro Crew asks for, not what
+that tool does next. `GET /api/knowledge/config` returns the list as
+`url_allowed_hosts`, so the add form can say when it is empty.
+
 ## 3. LLMPool workers (`llm_pool.py`)
 
 Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from **workload-isolated** `LLMPool` instances — provider-agnostic, bounded pools of **long-lived** ACP workers (the extraction pool sized by `knowledge.extraction_pool_size`, default `DEFAULT_POOL_SIZE` = 3; the fetch pool has one worker). A `Worker` ABC has two concrete paths:

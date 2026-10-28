@@ -14391,7 +14391,13 @@
           "synced": "Aggiornato"
         },
         "added_by_agent": "○ aggiunto dall’agente",
-        "updates_when_the_agent_adds_a_document": "Si aggiorna quando l’agente aggiunge un documento; niente da sincronizzare"
+        "updates_when_the_agent_adds_a_document": "Si aggiorna quando l’agente aggiunge un documento; niente da sincronizzare",
+        "web_page": "Pagina web",
+        "page_url": "URL della pagina",
+        "page_url_e_g": "URL della pagina (es. https://example.com/article)",
+        "add_page": "Aggiungi pagina",
+        "web_page_hosts_allowed": "Scarica una pagina via HTTPS. Host consentiti: {{hosts}}. Aggiungine altri in knowledge.doc_ingest_hosts.",
+        "web_page_no_hosts_allowed": "Scarica una pagina via HTTPS, solo dagli host elencati in knowledge.doc_ingest_hosts. L'elenco è vuoto, quindi aggiungi prima l'host della pagina."
       },
       "settings": {
         "title": "Ingestion Settings",

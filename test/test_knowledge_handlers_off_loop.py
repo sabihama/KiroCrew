@@ -52,6 +52,17 @@ from kiro_crew.on_loop_db import OnLoopStoreError
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
+@pytest.fixture(autouse=True)
+def _listed_test_hosts(_floor_monkeypatch):
+    """List the hosts these sources name in ``knowledge.doc_ingest_hosts``.
+
+    A source with no connector is fetched by Kiro Crew only from a listed host,
+    and the list is empty by default; these tests exercise what happens after
+    that gate lets the URL through.
+    """
+    _floor_monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com"])
+
+
 @pytest.fixture()
 def store(tmp_path):
     """A store built OFF the loop -- construction is the one sanctioned take."""
@@ -1090,7 +1101,7 @@ class TestCancellationFinalizesSyncStatus:
         source_id = await asyncio.to_thread(_seed_source, store)
         started = asyncio.Event()
 
-        async def _hang_fetch(_url, _pool):
+        async def _hang_fetch(_url, _pool, **_kw):
             started.set()
             await asyncio.Event().wait()
 
@@ -1214,7 +1225,7 @@ class TestCancellationFinalizesSyncStatus:
         source_id = await asyncio.to_thread(_seed_source, store)
         started = asyncio.Event()
 
-        async def _hang_fetch(_url, _pool):
+        async def _hang_fetch(_url, _pool, **_kw):
             started.set()
             await asyncio.Event().wait()
 

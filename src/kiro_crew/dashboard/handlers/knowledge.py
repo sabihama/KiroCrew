@@ -161,6 +161,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sync import _background_agent_sync  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _claim_sync  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _claim_sync_for_task  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _doc_ingest_hosts  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _finalize_sync_status  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _hand_off_under_gate  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _ingest_local_file_task  # noqa: F401
@@ -170,6 +171,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sync import _source_row  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _sync_artifact_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _sync_source_body  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _url_refusal_response  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _write_status_cancel_safe  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import sync_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import (  # noqa: F401
@@ -204,6 +206,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.upload_limits import knowledge_upload_max_bytes  # noqa: F401
     from kiro_crew.executors import run_in_embed_pool  # noqa: F401
     from kiro_crew.knowledge.agent_fetch import fetch_url_content  # noqa: F401
+    from kiro_crew.knowledge.agent_fetch import url_fetch_refusal  # noqa: F401
     from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI  # noqa: F401
     from kiro_crew.knowledge.agent_source import add_agent_document  # noqa: F401
     from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI  # noqa: F401

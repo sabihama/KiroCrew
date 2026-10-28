@@ -14159,7 +14159,13 @@
           "synced": "Aktuell"
         },
         "added_by_agent": "○ vom Agenten hinzugefügt",
-        "updates_when_the_agent_adds_a_document": "Wird aktualisiert, wenn der Agent ein Dokument hinzufügt; nichts zu synchronisieren"
+        "updates_when_the_agent_adds_a_document": "Wird aktualisiert, wenn der Agent ein Dokument hinzufügt; nichts zu synchronisieren",
+        "web_page": "Webseite",
+        "page_url": "Seiten-URL",
+        "page_url_e_g": "Seiten-URL (z. B. https://example.com/article)",
+        "add_page": "Seite hinzufügen",
+        "web_page_hosts_allowed": "Ruft eine Seite über HTTPS ab. Erlaubte Hosts: {{hosts}}. Weitere in knowledge.doc_ingest_hosts hinzufügen.",
+        "web_page_no_hosts_allowed": "Ruft eine Seite über HTTPS ab, nur von Hosts aus knowledge.doc_ingest_hosts. Diese Liste ist leer, also zuerst den Host der Seite dort eintragen."
       },
       "settings": {
         "title": "Ingestion Settings",

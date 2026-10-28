@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe } from 'lucide-react'
 import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
-import { fmtCompact, fmtNumber } from '../../i18n/format'
+import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -283,7 +283,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
   const [showAdd, setShowAdd] = useState(false)
-  const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
+  const [addType, setAddType] = useState<'local_file' | 'local_folder' | 'url'>('local_file')
   const [addUri, setAddUri] = useState('')
   const [addName, setAddName] = useState('')
   const [addIgnorePatterns, setAddIgnorePatterns] = useState('')
@@ -337,10 +337,12 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   const { data: kbConfig } = useQuery({
     queryKey: ['knowledge-config'],
-    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean }>('/config'),
+    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean; url_allowed_hosts?: string[] }>('/config'),
     staleTime: 60_000,
   })
   const folderPickerAvailable = kbConfig?.folder_picker ?? false
+  // The gateway fetches a web page only from these hosts; empty by default.
+  const urlAllowedHosts = kbConfig?.url_allowed_hosts ?? []
 
   const pickFolderMutation = useMutation({
     mutationFn: () => knowledgeApi<{ path?: string | null }>('/pick-folder', { method: 'POST' }),
@@ -420,7 +422,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   const handleAdd = () => {
     if (!addUri.trim()) return
-    const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
+    // A pasted link often carries a trailing newline, which the gateway refuses.
+    const uri = addType === 'url' ? addUri.trim() : addUri
+    const body: Record<string, unknown> = { name: addName || uri, source_type: addType, uri }
     if (addType === 'local_folder') {
       const props: Record<string, unknown> = { recursive: addRecursive }
       if (addIgnorePatterns.trim()) props.ignore_patterns = addIgnorePatterns.split('\n').map(s => s.trim()).filter(Boolean)
@@ -450,14 +454,19 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
           <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
           <div className="flex gap-2 flex-wrap">
-            {(['local_file', 'local_folder'] as const).map(t => (
+            {(['local_file', 'local_folder', 'url'] as const).map(t => (
               <button key={t} onClick={() => setAddType(t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
+                {t === 'local_file'
+                  ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</>
+                  : t === 'local_folder'
+                  ? <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>
+                  : <><Globe size={12} /> {i18nT('pages.knowledge.sourcesList.web_page')}</>}
               </button>
             ))}
           </div>
-          <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
+          {/* A fetched page is stored in the default namespace, so no picker is offered for it. */}
+          {addType !== 'url' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
           {addType === 'local_file' ? (
             <>
               <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} caption={i18nT('pages.knowledge.helpers.supported_formats', { formats: supportedFormatsDisplay })} />
@@ -472,6 +481,35 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 variant="inline"
                 testId="sources-upload-limit-notice"
                 message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
+              />
+            </>
+          ) : addType === 'url' ? (
+            <>
+              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+                aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
+                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+              <input value={addUri} onChange={e => setAddUri(e.target.value)} type="url" inputMode="url"
+                placeholder={i18nT('pages.knowledge.sourcesList.page_url_e_g')}
+                aria-label={i18nT('pages.knowledge.sourcesList.page_url')}
+                aria-describedby="sources-url-hosts"
+                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+              {/* Says which hosts can be fetched before the user tries one: the list
+                  is empty by default, and a refusal after the click explains less. */}
+              <div id="sources-url-hosts" className="text-[11px] text-muted">
+                {urlAllowedHosts.length
+                  ? i18nT('pages.knowledge.sourcesList.web_page_hosts_allowed', { hosts: fmtList(urlAllowedHosts) })
+                  : i18nT('pages.knowledge.sourcesList.web_page_no_hosts_allowed')}
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
+                <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
+                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}</button>
+              </div>
+              {/* No hand-off: the add-source panel holds the unsaved page name and link drafts. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-error"
+                message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
               />
             </>
           ) : (

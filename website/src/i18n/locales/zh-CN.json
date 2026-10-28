@@ -13927,7 +13927,13 @@
           "synced": "已是最新"
         },
         "added_by_agent": "○ 由代理添加",
-        "updates_when_the_agent_adds_a_document": "代理添加文档时更新；无需同步"
+        "updates_when_the_agent_adds_a_document": "代理添加文档时更新；无需同步",
+        "web_page": "网页",
+        "page_url": "网页地址",
+        "page_url_e_g": "网页地址（例如 https://example.com/article）",
+        "add_page": "添加网页",
+        "web_page_hosts_allowed": "通过 HTTPS 抓取一个网页。允许的主机：{{hosts}}。可在 knowledge.doc_ingest_hosts 中添加更多。",
+        "web_page_no_hosts_allowed": "通过 HTTPS 抓取一个网页，只限 knowledge.doc_ingest_hosts 中列出的主机。该列表为空，请先把网页的主机加进去。"
       },
       "settings": {
         "title": "Ingestion Settings",

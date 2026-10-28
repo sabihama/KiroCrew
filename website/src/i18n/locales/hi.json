@@ -14159,7 +14159,13 @@
           "synced": "अद्यतित"
         },
         "added_by_agent": "○ एजेंट द्वारा जोड़ा गया",
-        "updates_when_the_agent_adds_a_document": "एजेंट के कोई दस्तावेज़ जोड़ने पर अपडेट होता है; सिंक करने को कुछ नहीं है"
+        "updates_when_the_agent_adds_a_document": "एजेंट के कोई दस्तावेज़ जोड़ने पर अपडेट होता है; सिंक करने को कुछ नहीं है",
+        "web_page": "वेब पेज",
+        "page_url": "पेज URL",
+        "page_url_e_g": "पेज URL (जैसे https://example.com/article)",
+        "add_page": "पेज जोड़ें",
+        "web_page_hosts_allowed": "HTTPS से एक पेज लाता है। अनुमत होस्ट: {{hosts}}। और होस्ट knowledge.doc_ingest_hosts में जोड़ें।",
+        "web_page_no_hosts_allowed": "HTTPS से एक पेज लाता है, केवल knowledge.doc_ingest_hosts में दिए होस्ट से। यह सूची खाली है, इसलिए पहले पेज का होस्ट वहाँ जोड़ें।"
       },
       "settings": {
         "title": "Ingestion Settings",

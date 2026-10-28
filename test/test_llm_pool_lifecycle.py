@@ -47,7 +47,9 @@ class TestFetchUrlContent:
                 "  This is a document with enough content to pass the minimum length validation check.  "
             ],
         )
-        result = await fetch_url_content("https://example.com/doc", pool)
+        result = await fetch_url_content(
+            "https://example.com/doc", pool, allowed_hosts=["example.com"]
+        )
         assert (
             result
             == "This is a document with enough content to pass the minimum length validation check."
@@ -59,7 +61,7 @@ class TestFetchUrlContent:
 
         pool = _make_pool_with_fake_workers(pool_size=1, responses=[""])
         with pytest.raises(RuntimeError, match="empty content"):
-            await fetch_url_content("https://example.com/doc", pool)
+            await fetch_url_content("https://example.com/doc", pool, allowed_hosts=["example.com"])
 
     @pytest.mark.asyncio
     async def test_fetch_raises_on_whitespace_only(self):
@@ -67,7 +69,7 @@ class TestFetchUrlContent:
 
         pool = _make_pool_with_fake_workers(pool_size=1, responses=["   \n  "])
         with pytest.raises(RuntimeError, match="empty content"):
-            await fetch_url_content("https://example.com/doc", pool)
+            await fetch_url_content("https://example.com/doc", pool, allowed_hosts=["example.com"])
 
 
 # ---------------------------------------------------------------------------

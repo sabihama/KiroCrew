@@ -14623,7 +14623,13 @@
           "synced": "Актуально"
         },
         "added_by_agent": "○ добавлено агентом",
-        "updates_when_the_agent_adds_a_document": "Обновляется, когда агент добавляет документ; синхронизировать нечего"
+        "updates_when_the_agent_adds_a_document": "Обновляется, когда агент добавляет документ; синхронизировать нечего",
+        "web_page": "Веб-страница",
+        "page_url": "URL страницы",
+        "page_url_e_g": "URL страницы (например, https://example.com/article)",
+        "add_page": "Добавить страницу",
+        "web_page_hosts_allowed": "Загружает одну страницу по HTTPS. Разрешённые хосты: {{hosts}}. Добавьте другие в knowledge.doc_ingest_hosts.",
+        "web_page_no_hosts_allowed": "Загружает одну страницу по HTTPS, только с хостов из knowledge.doc_ingest_hosts. Этот список пуст, поэтому сначала добавьте туда хост страницы."
       },
       "settings": {
         "title": "Ingestion Settings",

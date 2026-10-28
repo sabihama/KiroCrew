@@ -492,8 +492,10 @@ class KnowledgeConfig:
         default_factory=list,
         metadata=_meta(
             "Doc-Ingest Host Allowlist",
-            "Exact hostnames whose links may be fetched by KIROCREW ITSELF and "
-            "ingested, for an edition that wires a server-side doc-link scanner. "
+            "Exact hostnames whose pages Kiro Crew ITSELF may fetch and ingest: "
+            "a web-page source added under Knowledge -> Add Source, and any "
+            "source synced by the URL-fetch pool. https only, port 443, no "
+            "subdomain matching. "
             "Empty = fetch nothing (SSRF-safe deny-by-default). This governs only "
             "that server-fetch path -- it does NOT gate 'Auto-Add Documents' "
             "above, where the agent has already fetched the content under its own "

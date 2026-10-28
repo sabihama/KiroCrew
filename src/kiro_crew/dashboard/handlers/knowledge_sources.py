@@ -33,11 +33,14 @@ from kiro_crew.dashboard.handlers.knowledge_access import (
 )
 from kiro_crew.dashboard.handlers.knowledge_sync import (
     _add_source_unique,
+    _doc_ingest_hosts,
     _ingest_local_file_task,
     _is_syncable,
     _source_row,
+    _url_refusal_response,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.knowledge.agent_fetch import url_fetch_refusal
 from kiro_crew.knowledge.folder_watcher import (
     estimate_scan_cost,
     folder_chunk_budget,
@@ -379,10 +382,12 @@ async def add_source(request: web.Request) -> web.Response:
             return web.json_response({"error": "file not found"}, status=404)
         uri = probe.resolved
     elif not (sync_scheduler and sync_scheduler.get_connector(source_type)):
-        if not uri.startswith("https://"):
-            return web.json_response({"error": "URI must start with https://"}, status=400)
-        if len(uri) > 2048:
-            return web.json_response({"error": "URI too long (max 2048)"}, status=400)
+        # A source with no connector is synced by the URL-fetch pool, so it is
+        # held to the same rule as the fetch: https, and a listed host.
+        refusal = url_fetch_refusal(uri, await asyncio.to_thread(_doc_ingest_hosts))
+        if refusal is not None:
+            _sel_log("source.add_denied", reason=refusal[0], uri=uri)
+            return _url_refusal_response(*refusal)
 
     # Check for existing source with same URI
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
@@ -808,5 +813,8 @@ async def get_config(request: web.Request) -> web.Response:
             "supported_formats": sorted(FileReader.SUPPORTED - {""}),
             "accepts_no_extension": "" in FileReader.SUPPORTED,
             "folder_picker": _folder_picker_available(request),
+            # The hosts a web-page source may name; empty on a default config,
+            # where the add form says that nothing can be fetched yet.
+            "url_allowed_hosts": await asyncio.to_thread(_doc_ingest_hosts),
         }
     )
