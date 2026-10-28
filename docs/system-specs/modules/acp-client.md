@@ -90,7 +90,7 @@ class, and the handle's state stays on the instance, so a patch of a method on t
 (also when spelled through `kiro_crew.acp.runtime.AcpSessionHandle`) or on an instance, an
 `AcpSessionHandle.__new__` build and an unbound `AcpSessionHandle.<member>(stub, ...)` call
 all reach the one function; each owner's docstring names the instance fields its members
-write and read. `_own_methods` names each bound function after its class attribute, so its
+write and read. `own_methods` names each bound function after its class attribute, so its
 `__qualname__` (what a coroutine's and a task's repr print) and `inspect.signature` read as
 before the move, and only its `__module__` names the owner. The runtime exception family
 keeps `kiro_crew.acp.session_handle` as its `__module__`, so error chains name the path
@@ -119,7 +119,7 @@ inventory, the binding, the reach and the import inventory.
 | `acp/session_handle_elicitation.py` | an MCP server's elicitation on the multiplexed handle: the same parse-or-decline, consumer gate, `answer_elicitation` and pending cancel as `client_elicitation.py`, over the shared runtime's `send_response` |
 | `acp/session_handle_updates.py` | `session/update` frames as `AcpEvent` values: tool calls and the per-tool-call caches they keep, child-tool frames and structured status frames |
 | `acp/session_handle_turn.py` | one turn end to end: `prompt`, `stream_command`, the per-turn reset and pre-turn drain in `_run_turn`, the abandoned-turn close and `wait_turn_done` |
-| `acp/session_handle_class.py` | the class statement: the constructor, the properties, the class default, the member table that binds every owner's members, and `_own_methods` |
+| `acp/session_handle_class.py` | the class statement: the constructor, the properties, the class default, the member table that binds every owner's members, and the `_MEMBER_OWNERS` set it passes to `own_methods` (`_facade_bindings.py`) |
 | `acp/session_handle_dispatch.py` | the per-turn event loop `_dispatch_events`: it reads the session queue, routes each frame and runs the in-band watchdog arm |
 
 The class statement sets `__module__ = "kiro_crew.acp.session_handle"`, so reprs, pickles
@@ -127,8 +127,8 @@ and `typing.get_type_hints` on the class name the facade, and `acp/session_handl
 re-exports it: `kiro_crew.acp.session_handle.AcpSessionHandle` and
 `kiro_crew.acp.runtime.AcpSessionHandle` are the same class object, and a patch of a member on
 it reaches every caller. `inspect.getsource(AcpSessionHandle)` does not find the class through
-that module name; read a member's source, or `acp/session_handle_class.py`. `_own_methods`
-decorates the class there. `acp/session_handle.py` keeps only the compatibility facade. New
+that module name; read a member's source, or `acp/session_handle_class.py`. `own_methods`
+renames its members there. `acp/session_handle.py` keeps only the compatibility facade. New
 `AcpSessionHandle` behaviour goes to the owner whose row names its responsibility, bound in the
 class (`acp/session_handle_class.py`) under that owner's header.
 
@@ -153,7 +153,7 @@ one block above `__init__`, one comment header per owner. The constructor, the p
 the class constants stay in the class, and the runtime's state stays on the instance, so a
 patch of a method on the class or on an instance, an `AcpRuntime.__new__` build and an unbound
 `AcpRuntime.<member>(stub, ...)` call all reach the one function; each owner's docstring names
-the instance fields its members write and read. `_own_methods` names each bound function after
+the instance fields its members write and read. `own_methods` names each bound function after
 its class attribute, so its `__qualname__` (what a coroutine's and a task's repr print) and
 `inspect.signature` read as before the move, and only its `__module__` names the owner. An
 exception class an owner defines keeps `kiro_crew.acp.runtime` as its `__module__`, so error
@@ -188,7 +188,7 @@ names its responsibility, bound in the class under that owner's header.
 | `acp/runtime_host_requests.py` | requests the agent sends this host that no session turn answers: permission requests for unregistered sessions (bounded off-loop answers and their audit), the host credential callback, MCP sign-in and re-attempt, the consent URL, the engine's MCP secret store (`_kiro/secret/*`), and ownerless requests |
 | `acp/runtime_frame_accounting.py` | what the reader drops or truncates, counted instead of logged per frame: the backend subagent roster and its overflow episodes, and the unroutable-frame drop summaries |
 | `acp/runtime_reader_loop.py` | the single stdout reader: routing every frame by id and sessionId, the host's notification aliases, oversize-frame recovery, and the error an awaited request fails with |
-| `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and `_own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
+| `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and the `_MEMBER_OWNERS` set it passes to `own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
 
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
@@ -472,7 +472,25 @@ the key when the call ends), `judge:<uuid4 hex>` from `decisions/impl_llm.py`
 `dashboard/handlers/taskrunner.py`, `hook:default:<epoch s>-<token_hex(6)>` from
 `dashboard/handlers/hooks.py` (per-request default webhook key), or
 `wf-author:<wf_<n>>:a<attempt>` from `workflows/service.py` (destroyed in the
-finally block after authoring) -- never a caller-supplied `cwd`. The `memory-consolidation` key
+finally block after authoring), or one of the four issue-radar model-call keys
+`issue-radar-ai:<owner>/<repo>#<n>:<uuid4 hex>`,
+`issue-radar-pr-ai:<owner>/<repo>#<n>:<uuid4 hex>`,
+`issue-radar-reco:<owner>/<repo>:<uuid4 hex>` and
+`issue-radar-tagging:<owner>/<repo>:<uuid4 hex>` from
+`apps/builtins/issue_radar/backend/http_routes/{ai,recommendations,tagging}.py`
+(one tool-less call each, released and destroyed on return by
+`_run_oneshot_model`) -- never a caller-supplied `cwd`. An issue-radar `<owner>`
+may be a nested GitLab `group/sub` path, and each repository segment is limited
+to `[A-Za-z0-9._-]`, the set the GitHub and GitLab segment validators admit, so
+the key never holds `\`, `:` or a space; a key outside that set (an Azure
+segment with a space) stays long-lived and its folder is kept. Unlike the other
+shapes, an issue-radar key's folder is not just the key with `:` turned into `_`:
+`_safe_dir_name` also turns each `/` into `_` and keeps `#`, so
+`issue-radar-ai:o/r#7:<hex>` lives in `issue-radar-ai_o_r#7_<hex>`. Its entry in
+the shape table therefore carries a (key pattern, folder pattern) pair for the
+repository component instead of one regex shared by both forms. The four
+issue-radar shapes are reclaimable on both platforms' walks (the pinned walk and
+the by-name Windows walk). The `memory-consolidation` key
 counts as one-run only where the walk holds `.kiro` open; on the by-name walk
 (Windows) its folder is never marked, so neither the shutdown reclaim nor the sweep
 removes it, and its name is no sweep candidate. The doctor's census below still
@@ -1628,7 +1646,12 @@ The details below describe the Kiro and Claude paths implemented directly here:
     native restrictions; only an absent settings file, or one that is empty or
     holds only JSON whitespace (space, tab, CR, LF), with or without a single
     leading UTF-8 byte-order mark, contributes no restrictions. A document behind
-    that same BOM is parsed normally. Off the event loop a read may pause for a
+    that same BOM is parsed normally. A UTF-16 or UTF-32 mark, or bytes that are
+    not UTF-8, are refused before parsing (kiro-cli cannot read such a file
+    either). Each refusal carries a fixed reason
+    (`acp/session_mcp_settings_read.py`, re-exported by `session_mcp`) that the
+    WARNING and the user-facing message repeat; the reason never quotes the
+    file's content. Off the event loop a read may pause for a
     retry, so `session_mcp.native_settings_sources` brackets each pass with every
     file's identity and keeps a pass only when no file was replaced or rewritten
     while it ran; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
@@ -2896,7 +2919,10 @@ message, and no token or credential text is logged.
   `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
   shared `kiro_prerequisite_required` 503 — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
-  only the subprocess is skipped. On `/api/models` the gate is not the only
+  only the subprocess is skipped. Neither gate runs on the KAS bundle route,
+  where no kiro-cli is spawned: `/api/models` dispatches to
+  `models_kas_bundle.api_models_kas_bundle` first (see "The model picker follows
+  the route" below), and `/api/sessions/usage` takes its vault-owned path. On `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
   classifies that output and answers the same `kiro_prerequisite_required`, so an
@@ -3742,6 +3768,40 @@ install the engine either -- a changed pin needs `kirocrew kas install`, which
 the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+
+**The model picker follows the route.** `GET /api/models` dispatches on the
+positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route` (`acp_backend ==
+"kas"` AND `agent.kas_bundle`) BEFORE the kiro-cli path, so on this route it never
+calls `reject_if_kiro_unverified` and never spawns `--list-models`
+(`dashboard/handlers/models_kas_bundle.py`; the kiro-cli path below is unchanged
+for every other configuration, the relay route included). Measured on the bundled
+engine (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`), `session/new`
+carries no `models` object: the list is the `configOptions` `model` select, each
+option with `_meta.kiro.rateMultiplier` and no structured context window. The
+shared-runtime driver records that select as the engine's catalog, stamped with
+the vault identity fingerprint the session's request went out under
+(`agent_sdk/kas_model_catalog.py`, [model-selection.md](../common/model-selection.md)),
+and the endpoint serves the recording: readiness is the bundle's (installed
+engine, else 503 `kas_bundle_not_installed`; Crew's vault holding a usable
+identity, else 503 `kas_bundle_sign_in_required` -- never kiro-cli's code, which
+renders a `kiro-cli login` remedy); a cold process answers `auto` alone with 200,
+not a degraded 503, because nothing failed and the dashboard refetches the list
+when a session spawns -- and "cold" includes a process whose Crew sign-in changed
+since the recording, because the rows are served only to the vault identity
+they were recorded for, whichever process changed the vault, and the dashboard
+resets its own model-list caches on its own sign-in and sign-out (the handler
+reads the vault's fingerprint again after its one await, the advertised-store
+persist, and answers cold rather than serve a snapshot from before a switch); a recorded select answers its rows with `rate_multiplier`
+where the option priced one and `context_window` only where
+`model_registry.model_window` knows the id (an operator declaration, an earlier
+kiro-cli catalog, the static registry) -- omitted otherwise, never invented. The
+rows feed the `acp` bucket and the prices through the kiro-cli catalog's own
+`refresh_kiro_catalog` admission. The kiro path's `_entitled_kiro_models` is NOT
+run on them: it exists because `--list-models` prints the same rows for every
+tier, while the select already lists what the signed-in account is served -- and
+it reads the newest live provider in the shared `acp` namespace, which after a
+hot switch of `agent.acp_backend` can be a retained kiro-cli session whose own
+list (`auto` alone, say) would hide models the bundle account has.
 
 **Setup and the install probe follow the route.** With `agent.kas_bundle` on, KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the installed engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) when it does not, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same reader, spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup once the engine is installed, which is what the switch's help text promises. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
 

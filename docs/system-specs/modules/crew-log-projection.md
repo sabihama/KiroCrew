@@ -54,9 +54,9 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_dashboard.py` | the `panel`, `agentic` and `mistakes` slot folds |
 | `crew_log/projection_crewmate.py` | the `goal` and `waiting` slot folds, a crewmate's own record |
 | `crew_log/projection_workers.py` | the `workers` slot fold (the worker sessions a mate created) and its internal per-worker part `worker` (what one worker is doing), merged at read |
-| `crew_log/projection_work.py` | the `work` slot fold, the `worktree` walk's unit join (`_work_units`) and the rebuild's `work_slots_naming_board` |
+| `crew_log/projection_work.py` | the `work` slot fold and the rebuild's `work_slots_naming_board` |
 | `crew_log/work_relay.py` | copies a bound worker's charges, and a sub-board's records, into the parent board's own log |
-| `crew_log/projection_workstreams.py` | the `workstreams` slot fold and its board closure |
+| `crew_log/projection_workstreams.py` | the `workstreams` slot fold and the own-units selection both board folds read (`_own_board_units`) |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
 | `crew_log/projection_registry.py` | `_FOLDS`: what each fold touches, copies and retains, its eager or lazy posture, and the import-time checks over the registry |
 | `crew_log/projection_kernel.py` | `Checkpoint` and the pure fold API (`require_name`, `fold_state_version`, `initial`, `advance`, `projection_of`, `fold`) |
@@ -256,7 +256,7 @@ and its one caller asks the registry for it by name.
 | projection | what it answers |
 |---|---|
 | `status` | Is this session open, and what is it doing: lifecycle, the open turn and its attempt, agent/owner/slot/cwd, current model and provider, turns completed and refused, the last stop reason, dropped writes. |
-| `usage` | What it spent: credits from all three spenders, split by which spent what in `credits_by_source`; the four token dimensions, per model; the per-turn context bill by source kind from `context/composed`, plus `context.turns`, a bounded list of per-turn rows (ordinal, phase, window, occupancy, and the agent engine's `measured` breakdown and time to first output from `context/measured`, attached to the tail row in O(1), with Crew's share of the engine's user text kept as a running sum of composed characters that restarts with a new unit or an engine compaction -- `projection_usage_measured`); compaction count and the context they freed; step count and time. The usage route also reads it per SLOT (`read_slot_projection(slot, "usage")`), with the slot's units ordered by `previous` succession (`units_in_succession`) rather than by `createdAt`. |
+| `usage` | What it spent: credits from all three spenders, split by which spent what in `credits_by_source`; the four token dimensions, per model; the context bill summed from `context/composed` (`context.tokens`, `chars`, `blocks`, `estimated_turns`), plus the context part, one fixed-size state that does not grow with the session (`projection_usage_measured`): Crew's five running sums since the engine's context last restarted (a new unit or an engine compaction restarts them, and a `compaction/applied` keeps only what was composed after the newest turn closed with an occupancy reading), the newest `context/measured` breakdown and time to first output (last-wins), the newest occupancy reading from `turn/completed` (reset by a new unit), a 30-row trend ring whose rows each hold one turn whole (its ordinal, its Kiro Crew blocks by name up to 64, its own engine measurement and occupancy reading), the newest session-start row kept apart, and the newest 200 dated occupancy readings plus the configured window, for the fullest-turn peak the context trace reports. It renders slim, so a push stays a few KB: `context.latest` (the newest turn whole), `trend` (each row its ordinal, five sums, `loop` and its own reading `used` only), `start` (the same plus `figure`), `earlier` (the turns before the ring, exact), `turns` (the turn counter) and `chars_per_token`; a kept row's whole turn is read from the state on demand (`context_turn`, `GET /api/telemetry/context-trace?turn=`); compaction count and the context they freed; step count and time. The usage route also reads it per SLOT (`read_slot_projection(slot, "usage")`), with the slot's units ordered by `previous` succession (`units_in_succession`) rather than by `createdAt`. |
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided` in the chat runner); coordinator approvals and question cards are not recorded. |
@@ -502,7 +502,11 @@ log renders `summary: "waiting for next report"` (`WORK_AWAITING_REPORT`) until 
 worker reports again, and a closed item renders its own state with no worker summary.
 `_work_step` still filters every entry by the bound board slot, so a relayed
 sub-board entry folds only into the sub-board's own row of the project report. The
-lazy `worktree` tree fold keeps its bind walk (`_board_closure_units`).
+`worktree` tree fold reads the same units (`tree_fold_units` returns
+`_own_board_units(root)`): each nested board reaches it as the copies relayed into
+the root's log, so no bind is walked and no other board's log is opened.
+`read_tree_projection` folds them in the root's warm slot cell, so a read with no new
+entry reads none and a restart resumes from the savepoint.
 
 `_Fold.bind_slot` is the optional fourth fold operation. The `work` fold registers
 `_work_bind_slot`, and `fold_slot_checkpoint` invokes it before the first entry.

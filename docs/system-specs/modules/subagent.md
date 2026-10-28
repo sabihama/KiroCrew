@@ -2267,7 +2267,7 @@ class SubagentInfo:
     stalled: bool         # reaper flagged this subagent as idle/stalled (UI signal)
     stop_reason: str      # ACP stop_reason of the completion that ended the run
     stop_class: str       # classify_stop_reason() class (succeeded|stalled|recovering|cancelled|failed)
-    partial: bool         # result is text streamed before a non-success completion, or before a transient generate failure the run kept
+    partial: bool         # result is text streamed before a non-success completion, or before a transient generate failure the run kept, or a completed turn that called a tool and left no reply
     _awaiting_approval: bool  # blocked on a human approval prompt (spawn gate or mid-run tool) → exempt from idle-stall
 ```
 
@@ -2410,7 +2410,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 
 The MECHANISM that delivers that invariant is the write channel, not luck. `ensure_running_marked` POSTS the mark and `yield_slot` POSTS the wait write, so on the store's single writer thread the wait lands behind the mark even when both are issued in ONE synchronous block — which is the normal case, because `session_handle` yields every event of one update back to back and appends the structured status to that same list. The dependency path is the exception and does not come through `ensure_running_marked` at all: `coordinator.report`'s wait write chooses wait-vs-park from its own result in the same critical section, so `_dependency_verdict` hands `(coordinator, store, task_id, signal, generation)` into `_dependency_report_db` and the mark plus `report` run as ONE unit on the writer thread. The mark it hands over is UNCONDITIONAL — `TaskStore.advance` is what decides, never the in-memory `info._taskq_running_marked`, which is published ahead of a posted write whose refusal reaches nobody, so a flag-gated park would write `retry_wait` on a live resident run. Details and the refused-edge consequences: [taskq.md](taskq.md) § Off the event loop.
 
-**Record**: `SubagentInfo.stop_reason`, `stop_class` and `partial` (True when text streamed before a non-success completion, or before a transient generate failure the run kept — see Transient Retry) are set on the completion that ended the run and carried on `subagent_done`; the gateway's parent injection appends the partial under an explicit "did NOT finish" banner when `partial` is set on a failed run. On the kept-success path (`outcome == "completed"`, `partial` set, `error` unset) that banner does not fire: the warning line that leads the result is the marker, and the batch digest tags the member `✅ (partial: backend failed to generate the final response)`. `outcome` stays the three-way canonical source (`stopped` / `failed` / `completed`); the class says WHY.
+**Record**: `SubagentInfo.stop_reason`, `stop_class` and `partial` (True when text streamed before a non-success completion, or before a transient generate failure the run kept — see Transient Retry; also True when a turn that ended normally called a tool, per `made_no_tool_calls`, and left no reply once `[OPTIONS: ...]` is stripped) are set on the completion that ended the run and carried on `subagent_done`; the gateway's parent injection appends the partial under an explicit "did NOT finish" banner when `partial` is set on a failed run. On the kept-success path (`outcome == "completed"`, `partial` set, `error` unset) that banner does not fire: the marker is the warning line that leads a kept generate failure, or the `EMPTY_TURN_NOTICE_AFTER_WORK` sentence (`messaging/empty_turn_copy.py`) that ends a turn with no reply after work. That notice is appended after the keep cap and rewritten into `result.txt`, so it tells the parent to continue rather than resend. The batch digest names the cause: `✅ (partial: ended without a closing reply after tool calls)` for a result ending in the notice, `✅ (partial: backend failed to generate the final response)` otherwise. `outcome` stays the three-way canonical source (`stopped` / `failed` / `completed`); the class says WHY.
 
 **Task runner**: `task_executor.execute_single_task` raises `_TurnNotCompleted(stop_class, stop_reason, partial=…)` inside the attempt's `try` for any non-success class, so the existing ladder (`MAX_RETRIES`, same-error loop detection, session reset between attempts) owns the recovery and `task.result` keeps the partial.
 
@@ -2817,6 +2817,20 @@ per-sub-agent completion note. Dashboard chat only.
   says the output is not a finished result. The dispatch is never refused and
   its reply carries no note: whether a task needs writes is not decidable from
   its prose, and the narration arrives in the completion, not the dispatch.
+- **A leaked final tool call** — a run can end on a normal `end_turn` with its
+  last tool call written into its text instead of run. The run reads the text
+  streamed after its last tool call (a `tool_call` frame or the run's own
+  permission request; a child escalation is not one) -- its final segment -- with the
+  dashboard's own `has_leaked_tool_call` (quoted code is ignored) and records
+  `SubagentInfo.leaked_tool_call`, carried on `subagent_done`. The note rides
+  where the no-tool-calls note does: one ``⚠ Agent `<id>` ended with a tool call
+  written as text…`` line on the lone completion event and under the member's
+  digest entry, a `leaked_tool_call` field on the `spawn_sub_agents` record, and
+  `leaked_tool_call` on `GET /api/spawn/{id}` for a completed run
+  (`constants.LEAKED_TOOL_CALL_NOTE`). Notice-only, like the dashboard's
+  mixed-turn leak notice (`should_notice_mixed_turn_leak`): earlier calls may
+  already have taken effect, so the outcome stays `completed`, nothing is
+  re-issued, and a failed or stopped run is not flagged.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.
@@ -4273,6 +4287,19 @@ and `subagent.AGENT_INTERNAL_CODE`, returned by `_validate_agent`, and
 `subagent.AGENT_NOT_AVAILABLE_CODE`, set by the gate — carried on `SubagentInfo.error_code`, and
 forwarded by the handler without being respelled there, so each value has exactly
 one spelling in the tree.
+
+**Stopped before it started.** A row `spawn()` accepted whose claim the store then
+refuses because the run was stopped while it waited (`CLAIM_REFUSED`) comes back as a
+terminal placeholder: `queued`, `done` and `user_stopped`, with no `error`. Nothing
+runs and no card or completion event follows. `subagent_wait_reasons.stopped_before_start`
+is the one test for that record; a live run stopped during its start is not `queued`
+and keeps its id. Every surface that starts a run reads it: `POST /api/spawn`,
+`POST /api/spawn/{id}/continue` and `POST /api/spawn/{id}/retry` answer `409` with
+`code: "stopped_before_start"` instead of `status: "spawned"` (`POST /api/spawn`
+adds `counted: true`, since the submission was counted, and the retry route releases
+its claim, so the failed run stays retryable); the channel `spawn` command replies that
+the subagent was stopped before it started; and the app spawn SDK raises `SpawnError`
+instead of returning an id that never runs.
 
 `spawn_run` switches on those codes for the wave short-circuit (#4842): once the
 gateway has refused an agent name, the remaining members of a wave sharing it are

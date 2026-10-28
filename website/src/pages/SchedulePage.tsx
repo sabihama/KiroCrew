@@ -59,6 +59,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
+import { browserTimeZone, isValidTimeZone } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -383,11 +384,13 @@ export default function SchedulePage() {
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(RENDER_TZ_STORAGE_KEY)
-      if (stored) return stored
+      // A stored zone may be junk ("undefined" from an earlier build that
+      // saved a missing browser zone): keep only names Intl accepts.
+      if (isValidTimeZone(stored)) return stored
     } catch {
       // localStorage unavailable (private mode) — fall through to default
     }
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
+    return browserTimeZone()
   })
   useEffect(() => {
     try {
@@ -1797,10 +1800,26 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
+                {/* A `last_error` is often a multi-frame Python traceback. The
+                    cap is viewport-relative (`min(45vh, 420px)`), not a fixed
+                    200px: a 200px window crushes a traceback to a few lines
+                    that scroll under the fold, so the one line naming the
+                    failure is the half the reader loses. 45vh uses the dialog's
+                    own `max-h-[86vh]` height, the 420px ceiling stops it
+                    dominating a tall screen, and it still scrolls internally
+                    for anything longer.
+
+                    `shrink-0` is load-bearing: this notice is a direct
+                    `overflow-y-auto` flex child of the column-flex DialogBody,
+                    which gives it an automatic `min-height: 0`, so the column
+                    squeezes it to its content's min-content height (~16px, one
+                    line) regardless of `max-height`. Measured in a running
+                    instance: without `shrink-0` the box renders 16px against a
+                    499px traceback; with it, the full height the cap allows. */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  className="shrink-0 max-h-[min(45vh,420px)] overflow-y-auto font-mono"
                   testId="schedule-job-last-error"
                 />
               </>

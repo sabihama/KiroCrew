@@ -438,17 +438,33 @@ engine instead ([aws-control.md](aws-control.md)).
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
-  outlives the logout.
+  outlives the logout. The bundle-route model picker needs nothing from the
+  sign-in service: its recording carries the vault identity fingerprint the
+  producing session's request went out under, and it is served only while the
+  vault still names that account, so a sign-in or sign-out from the dashboard
+  or from `kirocrew kas login` / `kas logout` (`cli_kas_login.py`) turns it cold
+  ([model-selection.md](../common/model-selection.md)). The dashboard drops its
+  own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
+  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  model-list caches (`clearCachedModels`, a reset of `['available-models']`),
+  because that query is otherwise refetched only when a session spawns.
 - The dashboard surfaces that NAME the signed-in account read the vault, never
   `kiro-cli whoami`, whenever the vault is the harness's credential (the KAS bundle
   route whatever the vault holds, or the relay route with a usable Crew sign-in --
   the usage poll's `_vault_owns_usage` verdict): the credit reading's `account_type`
   label and the identity door `fetch_local_identity` both come from
   `auth/bridge.vault_identity_claims`, one `resolve()` that yields the identity
-  fingerprint and the token-free slot and provider claims together, mapped onto
-  whoami's vocabulary by `dashboard/handlers/kiro_vault_identity.py`. The vault
-  stores no e-mail or portal URL, so a Crew sign-in shows its provider kind (and an
-  enterprise profile's display name from the usage API), not an address. The
+  fingerprint and the token-free slot, provider and recorded start-URL claims
+  together, rendered by `auth/whoami.whoami_document_for` -- the same writer
+  `kirocrew kas whoami` prints -- and mapped onto the dashboard's field names by
+  `dashboard/handlers/kiro_vault_identity.py`. So a Crew sign-in shows its
+  provider kind and, for an Identity Center sign-in that recorded one, its portal
+  host (a token stored before the start URL was recorded shows it after one
+  re-login). The vault stores no e-mail: the vault-credential `GetUsageLimits`
+  call sends `isEmailRequired: true`, as kiro-cli does, and the reading carries
+  `userInfo.email` as `email` (the discovered-candidate path does not ask; its
+  e-mail is whoami's). A 400 answer to that call is retried once without the
+  flag, so a service that refuses it loses only the e-mail, not the reading. The
   identity door keeps whoami's three-way answer: `{}` (nothing to inherit) only
   for a vault `TokenStore.holds_no_identity` proves empty, `None` (unknown) for
   one that did not read or holds an entry that will not decrypt, so an unreadable

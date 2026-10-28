@@ -80,7 +80,7 @@ to the facade's `_OWNERS`, to `OWNERS` in that test and to `_BANNED_AFTER_CLI_IM
 `test/test_cli_lazy_imports.py`.
 
 `kiro_crew/cli_server.py` holds the server-lifecycle commands `main()` dispatches to. It
-keeps `file-delivery approve`, `status`, `gateway`, `run`, `service`, `sandbox` and `logs`;
+keeps `status`, `gateway`, `run`, `service`, `sandbox` and `logs`;
 the gateway peer proof, the owner requests (`token`, `logout`, `update approve`), `stop`,
 `restart` and `update` live in its owners, and new work for each goes to its module:
 
@@ -600,7 +600,7 @@ module outside the snapshot family imports an owner.
   (`_copy_notifications`).
 
 | `kirocrew config get [key]` | Print full config or a dot-path value |
-| `kirocrew config set <key> <val>` | Set a config value (auto type detection). A key the loaded config does not hold and the schema does not declare exits 1 with `Unknown key`, on `--local` too. `--local` also accepts the slack keys `to_dict()` writes from outside the section (`slack.dm_activation`), type-checked against the field they come from. A key whose schema declares an enum refuses a value outside it on every write (exit 1, naming the selectable values), because the load path answers such a value by degrading it with a warning rather than rejecting it — the write is the last point where the mistake is still attributable to the command. What is written is the enum's own spelling: a case variant is canonicalised (`agent.log_level debug` stores `DEBUG`), and a key with a loader-side alias table (`stt.model`, through `stt.models.canonical_name`) stores the row the alias names (`turbo` stores `large-v3-turbo`). Only declared enums on concrete registry paths are checked; a wildcard path (`slack_channels.*.activation`) keeps reaching the loader's own degrade rule. Type is checked only on a declared leaf's first write (`_declared_type_error`); the enum check has no stored value to stand in for it. A **list-typed** key (declared `array` in the registry, wildcard paths matched segment by segment) never goes through the scalar parser: `_parse_list_value` accepts a JSON array and nothing else, and otherwise exits 1 before anything is written, on `--local` too. The case it exists for is Windows PowerShell 5.1, which strips the inner quotes of `'["a","b"]'` so the CLI receives `[a,b]`; the scalar parser stored that as a string and the loader then dropped the whole list field to its default (`agent.apps_trusted` un-trusting its apps). No comma-list spelling is accepted, because a list field's item type (`list[int]` or `list[str]`) is not known at the write. The refusal prints retry forms that survive PowerShell 7.3+, Windows PowerShell 5.1 and sh. The loader is unchanged. **`--value-base64=<token>`** carries the value as standard Base64 of its UTF-8 text, as ONE attached argument, in place of the positional `VALUE`. After a strict decode (`base64.b64decode(validate=True)`, then UTF-8) the text goes through the same list/scalar parser and the same writer as a positional value, so the stored config is identical. It exists because Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim and rewrites quotes, so no positional spelling is safe in every shell; an attached token has no quotes and no empty argument. The empty token (`--value-base64=`) is the empty string, detected with `is not None` (never truthiness) and so is a value, not a missing one: a scalar key stores empty text, and a list key refuses it as not a JSON array (an empty list is the token `W10=`, the text `[]`). Combined with a positional `VALUE` or with `--file` it exits 1 before any write; a malformed alphabet, bad padding or non-UTF-8 bytes exit 1 with a `--value-base64:` message and write nothing. `--local` and the key argument work as before. The Settings command rows (see learn-cron-dashboard) generate only this form. |
+| `kirocrew config set <key> <val>` | Set a config value (auto type detection). A key the loaded config does not hold and the schema does not declare exits 1 with `Unknown key`, on `--local` too. `--local` also accepts the slack keys `to_dict()` writes from outside the section (`slack.dm_activation`), type-checked against the field they come from. A `--local` write of a whole object (or a scalar) over an overlay section replaces it; when that removes keys the section held, a stderr hint after the write names each dropped dotted key and the dotted-leaf form that keeps siblings (`_overlay_keys_dropped`). The write itself is unchanged. A key whose schema declares an enum refuses a value outside it on every write (exit 1, naming the selectable values), because the load path answers such a value by degrading it with a warning rather than rejecting it — the write is the last point where the mistake is still attributable to the command. What is written is the enum's own spelling: a case variant is canonicalised (`agent.log_level debug` stores `DEBUG`), and a key with a loader-side alias table (`stt.model`, through `stt.models.canonical_name`) stores the row the alias names (`turbo` stores `large-v3-turbo`). Only declared enums on concrete registry paths are checked; a wildcard path (`slack_channels.*.activation`) keeps reaching the loader's own degrade rule. Type is checked only on a declared leaf's first write (`_declared_type_error`); the enum check has no stored value to stand in for it. A **list-typed** key (declared `array` in the registry, wildcard paths matched segment by segment) never goes through the scalar parser: `_parse_list_value` accepts a JSON array and nothing else, and otherwise exits 1 before anything is written, on `--local` too. The case it exists for is Windows PowerShell 5.1, which strips the inner quotes of `'["a","b"]'` so the CLI receives `[a,b]`; the scalar parser stored that as a string and the loader then dropped the whole list field to its default (`agent.apps_trusted` un-trusting its apps). No comma-list spelling is accepted, because a list field's item type (`list[int]` or `list[str]`) is not known at the write. The refusal prints retry forms that survive PowerShell 7.3+, Windows PowerShell 5.1 and sh. The loader is unchanged. **`--value-base64=<token>`** carries the value as standard Base64 of its UTF-8 text, as ONE attached argument, in place of the positional `VALUE`. After a strict decode (`base64.b64decode(validate=True)`, then UTF-8) the text goes through the same list/scalar parser and the same writer as a positional value, so the stored config is identical. It exists because Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim and rewrites quotes, so no positional spelling is safe in every shell; an attached token has no quotes and no empty argument. The empty token (`--value-base64=`) is the empty string, detected with `is not None` (never truthiness) and so is a value, not a missing one: a scalar key stores empty text, and a list key refuses it as not a JSON array (an empty list is the token `W10=`, the text `[]`). Combined with a positional `VALUE` or with `--file` it exits 1 before any write; a malformed alphabet, bad padding or non-UTF-8 bytes exit 1 with a `--value-base64:` message and write nothing. `--local` and the key argument work as before. The Settings command rows (see learn-cron-dashboard) generate only this form. |
 | `kirocrew config set --file <path>` | Replace config from a JSON file |
 | `kirocrew config edit` | Open config in `$EDITOR` |
 | `kirocrew memory list/search/stats/audit` | Inspect vector memory (entries, semantic search, counts, suspicious-content scan) |
@@ -669,8 +669,7 @@ operator to restart a gateway that works.
 The same busy-vs-unreachable split applies to the other CLI calls that reach the
 local gateway (`TimeoutError` is an `OSError`, so a timeout must be told apart
 from a refused connection or a slow live gateway reads as down). `kirocrew spawn
-list`/`spawn run`, `kirocrew logout`, `kirocrew update` approve, `kirocrew
-file-delivery approve`, `kirocrew cron trigger` and `kirocrew status` classify a
+list`/`spawn run`, `kirocrew logout`, `kirocrew update` approve, `kirocrew cron trigger` and `kirocrew status` classify a
 timeout through the one public `loopback_http.deadline_expired` seam (beside
 `loopback_urlopen`): a read timeout or a `URLError` wrapping a connect timeout
 reports the gateway as up but busy, and only a refused connection keeps the
@@ -682,9 +681,9 @@ was accepted and the gateway then stalled) as busy and report a connect-phase
 timeout as not running, rather than reading a stopped gateway as busy. A call
 whose request is not idempotent does not advise a blind retry: `spawn run` and
 `cron trigger` carry a request the gateway may act on after the client times out
-(spawn points at `kirocrew spawn list`), and `update` approve and `file-delivery`
-approve carry a single-use nonce the gateway may already have consumed, so their
-busy lines point at the dashboard rather than inviting a re-run.
+(spawn points at `kirocrew spawn list`), and `update` approve carries a single-use
+nonce the gateway may already have consumed, so its busy line points at the
+dashboard rather than inviting a re-run.
 
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
@@ -1310,7 +1309,7 @@ binding its port, while every other subcommand kept working.
 `platform_compat.ensure_line_buffered_stdout()` runs once on the **`gateway`
 command path only**, as the first statement of the dispatch branch, before the
 first status line prints. The gateway's `👻` status lines (`Checking for
-updates…`, `Probing MCP servers…`, `Kiro Crew gateway starting…`, the
+updates…`, `Probing MCP servers…`, `Kiro Crew gateway running — press Ctrl+C to stop`, the
 update-check outcome, `Shutting down…`) are plain `print()` calls. CPython
 line-buffers `sys.stdout` only when it is a terminal; a pipe or a file gets a
 block buffer that drains when it fills or when the interpreter exits cleanly.
@@ -1745,7 +1744,6 @@ byte:
 |---|---|---|
 | `kirocrew spawn list` / `spawn run`, `kirocrew artifact` (`cli_commands_gateway_api._gateway_send`) | `_owner_verified_secret_urlopen`, both arms | `Error: gateway ownership not verified: …`, exit 1 (`artifact` prints it on stderr) |
 | `spawn run`'s result poll (`_gateway_send`, operation `cli_spawn_poll`) | `_owner_verified_secret_urlopen`, both arms; every poll is audited | the same message on stderr, exit 1 |
-| `kirocrew file-delivery approve` (`_file_delivery_approve`) | `_owner_verified_secret_urlopen`, both arms | ownership message, exit 1 |
 | `kirocrew doctor` adaptive-controller read (`doctor_checks.workload._gateway_adaptive_state`) | `_owner_verified_secret_urlopen`, both arms | one `not read` line naming the unproven peer |
 | `app_lifecycle_client` (mint and action) | owner-only unix socket only; `verify_peer` requires `_connected_unix_peer_is_recorded_gateway` | `AppGatewayError` (not an `OSError`), so the CLI never drops to its file-only path |
 | `memory_forget_client` (mint and delete) | owner-only unix socket only; `_gateway_peer_verifier` wraps `_connected_unix_peer_is_recorded_gateway` and refuses up front when `_recorded_gateway_pid` has no pid | `ForgetRefused` |

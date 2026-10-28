@@ -190,6 +190,9 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
+   * - ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``
+     - pre-session registry query (whether the dashboard answers every harness
+       command itself, and which commands the ``/`` menu lists)
    * - ``ACP_BACKENDS_EFFORT_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` effort keys are written,
        read back at construction and cleared)
@@ -332,6 +335,15 @@ ACP_BACKEND_GOOSE = "goose"
 # closure -- so one global install is the whole precondition, with no workspace
 # checkout and no per-profile dependency step.
 ACP_BACKEND_DEEPSEEK = "deepseek"
+# GitHub Copilot CLI: a single binary that serves ACP itself (``copilot --acp
+# --stdio``), so its install probe names ONE component, like opencode and goose. Its
+# permission route is an ACP v1 session config option (``allow_all``), the shape
+# codex has -- see :data:`Routing.SESSION_CONFIG`.
+#
+# VERIFIED RANGE: Copilot CLI 1.0.100 is the recorded binary
+# (``test/fixtures/acp_frames/copilot/``). Its ``allow_all`` option and its
+# ``session/request_permission`` per tool call are wire facts of that release.
+ACP_BACKEND_COPILOT = "copilot"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -361,6 +373,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -376,6 +389,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -387,10 +401,8 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #: session with it: ``acp/client_start.py`` owns the whole spawn path (the ``_is_claude``
 #: branch, ``_resolve_claude_acp_bin``, ``_resolve_claude_code_executable``) and the
 #: adapter it needs is a PUBLIC npm package (``CLAUDE_ACP_NPM_PKG``). Nothing about it
-#: is edition-private. An earlier revision left it out and described it as a "dormant
-#: seam ... not something a public build can serve a session with", which made the
-#: option render as permanently unavailable on exactly the builds that could run it —
-#: the switch was the only missing piece, not the harness.
+#: is edition-private. Leaving it out would render the option as permanently
+#: unavailable on exactly the builds that can run it.
 #:
 #: Whether it is USABLE on a given machine is a separate question with its own answer:
 #: :mod:`kiro_crew.agent_sdk.backend_install` probes for the two binaries and the
@@ -471,6 +483,17 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   marker, keyed to this session's nonce and to Crew's sealed file, read before the
 #:   first prompt. See :data:`Routing.VERIFIED_GATE_EXTENSION` and
 #:   :data:`Readback.LOAD_MARKER`.
+#:
+#: ``ACP_BACKEND_COPILOT`` is included on the same two conditions, met by Codex's
+#: mechanism:
+#:
+#: * ``backend_install`` probes for the ``copilot`` binary, one component, because
+#:   the harness's own package ships the executable that serves ACP.
+#: * its tool calls are ROUTED. Copilot CLI advertises an ``allow_all`` session
+#:   config option on every ``session/new`` and ``session/load``; Crew verifies the
+#:   ``off`` value is advertised and applies it before the first prompt, refusing
+#:   the session otherwise, so a user's own allow-all default cannot reach a Crew
+#:   session. See :data:`Routing.SESSION_CONFIG`.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -481,6 +504,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -506,6 +530,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
 }
 
 #: The backend a deployment policy may never deny.
@@ -530,14 +555,14 @@ GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 # edition registered. ``_selectable`` is what this DEPLOYMENT may currently select,
 # i.e. the baseline minus whatever the live policy denies.
 #
-# Keeping them apart is what makes the policy re-appliable in BOTH directions. An
-# earlier revision of this module had one set and a destructive
-# ``deny_selectable_backend``: a ceiling installed at runtime
-# (``policy_distribution.apply_ceiling`` replaces ``current_context().governance``
-# mid-process) could then never be re-evaluated, so a TIGHTENED fleet policy stayed
-# inert until every gateway restarted and a LOOSENED one could not restore what the
-# earlier pass had already deleted. Recomputing ``baseline - denied`` has neither
-# failure: it is idempotent, order-independent, and reversible.
+# Keeping them apart is what makes the policy re-appliable in BOTH directions. With
+# one set and a destructive ``deny_selectable_backend``, a ceiling installed at
+# runtime (``policy_distribution.apply_ceiling`` replaces
+# ``current_context().governance`` mid-process) could never be re-evaluated, so a
+# TIGHTENED fleet policy would stay inert until every gateway restarted and a
+# LOOSENED one could not restore what an earlier application had already deleted.
+# Recomputing ``baseline - denied`` has neither failure: it is idempotent,
+# order-independent, and reversible.
 _baseline: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 
@@ -823,6 +848,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
     ACP_BACKENDS_SELF_SERVED_ACP,
+    COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     SelfServedLaunch,
     agent_process_markers,
@@ -864,6 +890,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     CC_PERMISSION_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
+    EFFORT_CONFIG_OPTION_ABSENT_FOLDS,
     EFFORT_CONFIG_OPTION_IDS,
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
@@ -875,10 +902,14 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     resolve_cc_permission_mode,
 )
 from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-exported vocabulary
+    _PROMPT_COMMAND_NAME,
+    _PROMPT_LEADING_FILLER,
+    ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_GATE_PROBE_COMMAND,
     ACP_BACKEND_GATE_READBACK,
     ACP_BACKEND_PERMISSION_CONFIG,
     ACP_BACKEND_PERMISSION_SETTING,
+    ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_HOOKS_LIST,
@@ -893,7 +924,9 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     gate_readback_for,
     permission_config_for,
     permission_setting_for,
+    prompt_command_issue,
     routing_for,
+    session_config_drift_issue,
 )
 from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
@@ -915,6 +948,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_STEER,
