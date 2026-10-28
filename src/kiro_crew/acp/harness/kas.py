@@ -397,7 +397,14 @@ class KasHarness(MembershipHarness):
                 os.path.basename(kas_bin),
                 ctx.agent or "<none>",
             )
-        return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
+        # Both relay entries (the launcher and the chat binary) are kiro-cli, so
+        # its internal sandbox owns this process when its switch is on. The bundle
+        # route above runs Node with no kiro-cli in the chain and does not say so.
+        return SpawnPlan(
+            argv=build_kas_argv(kas_bin, host_auth=host_auth),
+            host_auth=host_auth,
+            kiro_cli_relay=True,
+        )
 
     def apply_spawn_env(
         self,

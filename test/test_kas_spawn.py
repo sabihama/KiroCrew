@@ -261,24 +261,25 @@ class TestAuthOwnership:
 
 
 class TestSandboxClassification:
-    """KAS must not be declared to the sandbox as kiro-cli.
+    """KAS's relay route is declared to the sandbox as kiro-cli; its bundle route is not.
 
     ``wrap_argv`` skips Crew's own seatbelt when told the child is kiro-cli with
-    its internal sandbox on, because on macOS the two cannot nest. The relay DOES
-    spawn a kiro-cli binary now, which makes the claim look tempting -- and it is
-    wrong. kiro-cli spawns the KAS server with no ``--sandbox`` argument, and KAS
-    resolves an absent sandbox config to its no-op backend, so nothing starts an
-    OS sandbox inside. There is therefore nothing to nest (no EPERM risk) and
-    nothing to delegate to: this membership test fails OPEN, so claiming it would
-    skip Crew's seatbelt in favour of a layer that never exists and leave KAS
-    unconfined on macOS. False is the load-bearing answer, not the cautious one.
+    its internal sandbox on, because on macOS the two cannot nest. The relay
+    process IS kiro-cli, and kiro-cli starts that internal sandbox before it
+    spawns the KAS server as its child: left inside Crew's seatbelt, the relay
+    exits before ``initialize`` with ``sandbox initialization failed: Operation
+    not permitted`` (measured in the field on macOS). So the relay must take the
+    delegation kiro-cli takes. The bundle route runs Node with no kiro-cli in the
+    chain and no sandbox of its own, so claiming the delegation there would leave
+    KAS unconfined; ``test_harness_parity.py::test_kas_bundle_route_keeps_crew_sandbox``
+    pins that half through the same launch.
     """
 
     class _Abort(Exception):
         """Stops ``spawn`` at the sandbox call so no child is ever executed."""
 
     @pytest.mark.asyncio
-    async def test_kas_is_not_classified_as_kiro_cli(self, kas_stub, tmp_path):
+    async def test_kas_relay_is_classified_as_kiro_cli(self, kas_stub, tmp_path):
         captured: dict[str, object] = {}
 
         def fake_wrap(argv, **kwargs):
@@ -293,7 +294,7 @@ class TestSandboxClassification:
         with patch("kiro_crew.acp.runtime.wrap_argv", side_effect=fake_wrap):
             with pytest.raises(self._Abort):
                 await runtime.spawn()
-        assert captured["is_kiro_cli"] is False
+        assert captured["is_kiro_cli"] is True
 
     @pytest.mark.asyncio
     async def test_kiro_still_classified_as_kiro_cli(self, tmp_path, monkeypatch):

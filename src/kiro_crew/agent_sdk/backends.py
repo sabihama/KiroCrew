@@ -129,6 +129,8 @@ with no row here.
      - semantic question (whether a full context is answered by recycling)
    * - ``ACP_BACKENDS_INTERNAL_SANDBOX``
      - driver-internal (whether Crew's seatbelt is skipped at spawn)
+   * - ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+     - driver-internal (whether Crew's seatbelt is skipped on the kiro-cli relay route)
    * - ``ACP_BACKENDS_POD_HOME_REMAP``
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
@@ -819,12 +821,14 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
     ACP_BACKENDS_SELF_SERVED_ACP,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     SelfServedLaunch,
     agent_process_markers,
     launch_for,
     node_adapter_entry_relpaths,
+    spawn_delegates_to_internal_sandbox,
 )
 from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_CLIENT_META_SETTINGS,

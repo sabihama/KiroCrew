@@ -199,6 +199,14 @@ class SpawnPlan:
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
 
+    kiro_cli_relay: bool = field(default=False, kw_only=True)
+    """The argv runs kiro-cli's ACP relay, which starts kiro-cli's internal sandbox.
+
+    A route fact, stated by the harness that built the argv. It moves the
+    sandbox only for a harness in ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+    (``spawn_delegates_to_internal_sandbox``); any other harness is unaffected.
+    """
+
     host_auth: bool = False
     """Crew answers this process's credential callbacks.
 
