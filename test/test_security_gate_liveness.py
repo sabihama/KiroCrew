@@ -536,7 +536,16 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,635, for the ``rm`` floor's program word: an unquoted
 #: ``$x`` / ``${…}`` / ``$1`` there may be unset, so ``${x}rm`` is read as ``rm``.
 #: A word already read as ``rm`` keeps that reading. Deny-only: no allow widened.
-_PACKAGE_LINE_BUDGET = 32_643
+#:
+#: Raised by 145, from 32,643, for ``s3_direction``: the fail-closed reader that
+#: narrows the three ``aws s3 cp|mv|sync`` upload rows away on a download. It
+#: reads only plain literal words (the shared quote walk, ``shlex`` for the split),
+#: a fixed aws CLI flag table and exactly two operands, and refuses everything
+#: else, so the rows keep main's text and deny whatever it cannot read. Plus its
+#: branch in ``deny_gate``'s narrowing adapter, the raw command it is handed so
+#: a character that case-folds to ASCII is refused, and one facade import. A regex
+#: alternative was tried first and lost twice to bash word splitting.
+_PACKAGE_LINE_BUDGET = 32_788
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
